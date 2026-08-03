@@ -1,71 +1,158 @@
-# RAG Codebase Analysis Report
+# LangChain RAG & Multi-Modal AI System
 
-This document provides a comprehensive overview of the Retrieval-Augmented Generation (RAG) implementation within this repository. 
+A production-grade, asynchronous Retrieval-Augmented Generation (RAG) and multi-modal AI backend built with **FastAPI**, **LangChain**, and **MongoDB Atlas**.
 
-## Documentation & Visual Diagrams
-- [System Architecture](docs/architecture.md)
-- [RAG Workflows](docs/workflow.md)
-- [Chunking Strategy](docs/chunking.md)
+This system features dynamic query routing, hybrid vector & keyword retrieval fused via **Reciprocal Rank Fusion (RRF)**, automatic fallback across dual LLM providers (**Groq Llama 3.1 8B** + **Google Gemini 2.5 Flash**), tool calling with external webhooks, 3-stage LCEL document transformation chains, and multi-modal capabilities (voice STT/TTS & image generation).
 
-## 1. Core Architecture
+---
 
-The RAG system is built in Python and adopts a modular architecture to separate data ingestion, embedding generation, vector storage, and orchestration.
+## 📖 Architecture & Documentation Index
 
-### Key Components:
-- **`data_processor.py`**: Handles reading raw text from various file formats (currently `.txt`, `.md`, and `.pdf` via `pypdf`) and splits the text into manageable chunks.
-- **`embeddings.py`**: Wraps the `sentence_transformers` library. It uses the `all-MiniLM-L6-v2` model by default to generate dense vector representations (embeddings). This runs locally on the CPU, meaning no external API calls are required for embeddings.
-- **`vector_store.py`**: Manages the vector database using **ChromaDB**. It uses a persistent client saving data to disk (`./chroma_db`), allowing embeddings and chunks to survive restarts. 
-- **`rag_pipeline.py`**: Acts as the orchestrator. It provides two main operations: `ingest` (processing a folder of documents into the vector store) and `retrieve` (fetching relevant chunks for a user query).
-- **LLM Integration (ChatService)**: The `rag_pipeline.py` is purely for retrieval. It connects to the `ChatService` (located in the `ai` module), which handles passing the retrieved context to the actual Large Language Model for generation.
+Comprehensive technical documentation is available in the [`docs/`](file:///c:/Users/haris/Documents/Projects/Langchain-RAG/docs) directory:
 
-## 2. Workflow
+- 🏗️ **[System Architecture](docs/architecture.md)** — Complete component breakdown and system-wide Mermaid diagram.
+- 🔄 **[RAG & App Workflows](docs/workflow.md)** — Detailed sequence flows for startup ingestion, hybrid retrieval, tool execution, and streaming responses.
+- ✂️ **[Chunking Strategy](docs/chunking.md)** — Recursive text splitting, parameter choices, and incremental deduplication logic.
+- 🚀 **[Advanced RAG Concepts](docs/advanced-rag.md)** — Hybrid search, query expansion, re-ranking, and context compression.
+- 🤖 **[Agentic RAG Concepts](docs/agentic-rag.md)** — Planner loops, tool selection, reflection, and self-correction.
+- 🕸️ **[Graph RAG Concepts](docs/graph-rag.md)** — Knowledge graphs, entity-relation extraction, and graph traversal.
+- 🧩 **[Modular RAG Concepts](docs/modular-rag.md)** — Decoupled modules and flexible pipeline architectures.
 
-The application workflow is divided into two distinct phases: Ingestion and Retrieval.
+---
 
-### Ingestion Workflow
-1. **Document Loading**: Reads all supported files from a target folder.
-2. **Chunking**: Splits the raw text of each document into smaller, overlapping chunks (see Chunk Strategy below).
-3. **Embedding**: Passes the chunks through the local `SentenceTransformer` model to generate vector embeddings.
-4. **Storage**: Saves the chunk IDs, the raw text chunks, their embeddings, and metadata (like the source filename) into the ChromaDB collection. *(Note: Currently, the pipeline wipes and resets the collection on fresh ingestion).*
+## ✨ Key Features & Capabilities
 
-### Retrieval Workflow
-1. **User Query**: A user submits a question.
-2. **Query Embedding**: The question is embedded using the exact same local model used during ingestion.
-3. **Vector Search**: The system queries ChromaDB to find the top `k` (default is 4) chunks with embeddings most similar to the query embedding.
-4. **Context Construction**: The retrieved chunks are formatted along with their source metadata into a prompt.
-5. **Generation**: The compiled prompt is sent to the LLM to generate the final response.
+### 1. Dynamic Query Routing
+Before executing any retrieval or LLM generation, an ultra-fast classification chain (`QueryRouter`) categorizes incoming prompts into one of four distinct execution routes:
+- **`RAG`**: Performs hybrid search over uploaded knowledge base documents in MongoDB Atlas (no tools).
+- **`TOOL`**: Executes external tools directly (e.g. `get_weather` webhook) without performing document retrieval.
+- **`BOTH`**: Retrieves knowledge base context first to resolve entity/location details, then executes the tool call with the extracted context.
+- **`DIRECT`**: Answers directly from the LLM's parametric knowledge for general conversation.
 
-## 3. Chunk Strategy and Workflows
+### 2. MongoDB Atlas Hybrid Search & RRF
+- **Vector Search (`$vectorSearch`)**: Dense semantic search using Google's `models/gemini-embedding-001` (768 dimensions) with Cosine similarity.
+- **Keyword Search (`$search`)**: Sparse text search leveraging Atlas Search (BM25 algorithm).
+- **Reciprocal Rank Fusion (RRF)**: Combines ranked vector and keyword candidate lists into a single deduplicated, highly accurate context payload.
+- **Automatic Index Management**: Automatically provisions `vector_index` and `keyword_index` on MongoDB Atlas via PyMongo `SearchIndexModel` on boot.
 
-The chunking strategy is vital for maintaining context while fitting within LLM context window limits.
+### 3. Dual LLM High Availability Engine
+- **Primary LLM**: Groq `llama-3.1-8b-instant` (ultra-low latency).
+- **Fallback LLM**: Google Gemini `gemini-2.5-flash` (high quality, high context).
+- Integrated seamlessly using LangChain's `with_fallbacks()` runnable wrapper to protect against rate limits and outage events.
 
-- **Method**: Fixed-size word chunking with overlap.
-- **Parameters**: 
-  - **Chunk Size**: `300` words.
-  - **Overlap**: `50` words.
-- **Rationale**: The text is split by words. An overlap of 50 words is intentionally used between consecutive chunks so that sentence meanings or critical contexts are not abruptly cut in half at chunk boundaries.
-- **Metadata Association**: Each chunk is given a unique ID (e.g., `filename.pdf-0`) and retains its source filename in its metadata, allowing the system to cite where information came from.
+### 4. Incremental Ingestion & Zero-Cost Boot
+- On server startup (`app/main.py` lifespan), the system scans the `uploads/` directory.
+- It checks existing document chunk IDs in MongoDB Atlas before embedding.
+- **Only new or updated chunks** are passed to the embedding API, guaranteeing zero redundant embedding cost and fast boot times.
 
-## 4. About Our Prompt
+### 5. Multi-Modal & Specialized AI Modules
+- **3-Stage LCEL Chain (`app/ai/chain.py`)**: Concept extraction (JSON parser) → Concept enrichment → Markdown report generation.
+- **Image Generation (`app/ai/image.py`)**: Generates images using LiteLLM and Gemini Imagen 3 (`gemini/Gemini 2.5 Flash Preview Image`), returning PIL image instances.
+- **Voice Engine (`app/ai/voice.py`)**: Speech-to-Text via Groq Whisper Turbo (`whisper-large-v3-turbo`) and Text-to-Speech via `edge_tts` (`en-IN-PrabhatNeural`).
 
-The prompts used to instruct the LLM are stored in `app/prompts/rag_prompt.py`. 
+---
 
-- **System Prompt (`RAG_SYSTEM_PROMPT`)**: This prompt strictly constrains the LLM's behavior. 
-  - It forces the LLM to act as an assistant that uses **ONLY** the provided context.
-  - It includes an explicit instruction to state *"I don't know based on the information I have."* if the answer cannot be found in the context (preventing hallucinations).
-  - It asks the LLM to keep answers concise and to cite the source file when useful.
-- **Context Builder (`build_context_message`)**: This function formats the retrieved chunks before they are sent to the LLM. It injects the source name in brackets (e.g., `[my_resume.pdf]`) followed by the raw chunk text, ending with the user's specific question. This layout allows the LLM to easily associate facts with their origin documents.
+## 📁 Repository Structure
 
-## 5. Other Key Objectives & Takeaways
+```
+Langchain-RAG/
+├── app/
+│   ├── ai/
+│   │   ├── chain.py          # 3-Stage LCEL Concept Extraction & Enrichment Pipeline
+│   │   ├── chat.py           # Core ChatService, Router integration & Tool-calling loop
+│   │   ├── image.py          # Image generation via LiteLLM (Gemini Imagen 3)
+│   │   ├── router.py         # Lightweight QueryRouter classification chain
+│   │   └── voice.py          # Speech-to-Text (Whisper) & Text-to-Speech (EdgeTTS)
+│   ├── core/
+│   │   └── config.py         # Centralized Settings & environment variable configuration
+│   ├── db/
+│   │   └── mongodb.py        # Motor async MongoDB client & connection lifecycle
+│   ├── prompts/
+│   │   ├── chain_prompts.py  # Prompts for 3-stage chain pipeline
+│   │   ├── rag_prompt.py    # System prompts & context formatters for RAG
+│   │   └── router_prompt.py # System prompts for Router & route-specific models
+│   ├── rag/
+│   │   ├── data_processor.py # File loader (.pdf, .txt, .md) & RecursiveCharacterTextSplitter
+│   │   ├── embeddings.py     # Gemini GoogleGenerativeAIEmbeddings (768d)
+│   │   ├── rag_pipeline.py   # Ingestion & retrieval orchestrator singleton
+│   │   └── vector_store.py   # MongoDB Atlas Vector/Keyword search & RRF implementation
+│   ├── routes/
+│   │   └── chatbot.py        # FastAPI APIRouter streaming SSE endpoint (/chatbot)
+│   └── main.py               # FastAPI app initialization, lifespan handler & health routes
+├── docs/                     # Technical architecture, workflow, and RAG guides
+├── uploads/                  # Input directory for knowledge base documents (.pdf, .txt, .md)
+├── .env                      # Environment secrets (API keys & MongoDB connection URI)
+├── readme.md                 # Project Overview & System Documentation
+├── requirements.txt          # Python dependencies
+└── server.py                 # Server startup script (Uvicorn runner)
+```
 
-- **Privacy & Cost-Efficiency**: By using `sentence-transformers` locally, the application does not leak document data to external embedding APIs and saves on API costs during the ingestion phase.
-- **Traceability**: Because metadata (source document name) is stored with every chunk and passed into the prompt, the LLM can provide transparent answers with citations.
-- **Extensibility**: The separation of `VectorStore`, `EmbeddingModel`, and `RAGPipeline` means it is straightforward to swap out ChromaDB for another vector database (like Qdrant or Pinecone) or swap the embedding model without having to rewrite the core logic.
+---
 
+## ⚙️ Environment Configuration
 
+Create a `.env` file in the project root with the following keys:
 
-problems"
+```env
+# LLM & Embedding API Keys
+GEMINI_API_KEY=your_google_gemini_api_key
+GROQ_API_KEY=your_groq_api_key
+FLUX_AI=optional_flux_key
 
-nodes problem webhooks
+# MongoDB Atlas Configuration
+MONGO_URL=mongodb+srv://<username>:<password>@cluster0.mongodb.net/?retryWrites=true&w=majority
+DB_NAME=rag_db
 
+# External Tools & Webhooks
+WEATHER_WEBHOOK_URL=https://your-webhook-endpoint.com
+```
 
+---
+
+## 🚀 Running the Server
+
+1. **Activate Virtual Environment**:
+   ```bash
+   venv\Scripts\activate   # Windows
+   source venv/bin/activate # Linux/macOS
+   ```
+
+2. **Install Dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Start the FastAPI Server**:
+   ```bash
+   python server.py
+   ```
+   Or directly via Uvicorn:
+   ```bash
+   uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+   ```
+
+4. **Verify Health Check**:
+   Open `http://127.0.0.1:8000/health` in your browser.
+
+---
+
+## 📡 API Endpoint Reference
+
+### `POST /chatbot`
+Streams real-time Server-Sent Events (SSE) responses.
+
+- **Query Parameters**:
+  - `model_type` (`str`): Selects model configuration (e.g. `"default"`).
+  - `user_prompt` (`str`): The question or command for the assistant.
+
+- **Example Request**:
+  ```bash
+  curl -X POST "http://127.0.0.1:8000/chatbot?model_type=default&user_prompt=What%20is%20the%20weather%20in%20London%3F" \
+       -H "accept: text/event-stream"
+  ```
+
+---
+
+## 🛡️ License & Contributing
+
+Built with modern async Python standards and open for developer customization. Feel free to extend routers, add new custom tools, or swap vector backends!
