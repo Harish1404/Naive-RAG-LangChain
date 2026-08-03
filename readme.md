@@ -61,3 +61,11 @@ The prompts used to instruct the LLM are stored in `app/prompts/rag_prompt.py`.
 - **Privacy & Cost-Efficiency**: By using `sentence-transformers` locally, the application does not leak document data to external embedding APIs and saves on API costs during the ingestion phase.
 - **Traceability**: Because metadata (source document name) is stored with every chunk and passed into the prompt, the LLM can provide transparent answers with citations.
 - **Extensibility**: The separation of `VectorStore`, `EmbeddingModel`, and `RAGPipeline` means it is straightforward to swap out ChromaDB for another vector database (like Qdrant or Pinecone) or swap the embedding model without having to rewrite the core logic.
+
+
+
+problems"
+
+nodes problem webhooks
+
+

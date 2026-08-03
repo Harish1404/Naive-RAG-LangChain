@@ -7,6 +7,7 @@ class Settings:
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
     GROQ_API_KEY = os.getenv("GROQ_API_KEY")
     FLUX_AI = os.getenv("FLUX_AI")
+    WEATHER_WEBHOOK_URL = os.getenv("WEATHER_WEBHOOK_URL")
 
     MONGO_URL = os.getenv("MONGO_URL")
     DB_NAME = os.getenv("DB_NAME")
@@ -15,6 +16,7 @@ class Settings:
     gemini_api_key = GEMINI_API_KEY
     groq_api_key = GROQ_API_KEY
     flux_ai = FLUX_AI
+    weather_webhook_url = WEATHER_WEBHOOK_URL
 
 settings = Settings()
 

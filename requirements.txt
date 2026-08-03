@@ -6,8 +6,10 @@ langchain-community
 langchain-text-splitters
 langchain-groq
 langchain-google-genai
+langchain
 
 python-dotenv
+requests
 
 pymongo
 motor

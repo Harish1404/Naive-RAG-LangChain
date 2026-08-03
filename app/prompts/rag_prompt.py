@@ -6,7 +6,7 @@ Rules:
 - Base your answer strictly on the given context.
 - If the answer isn't in the context, say "I don't know based on the information I have."
 - Keep answers concise and to the point.
-- When useful, mention which source the information came from.
+- mention which source the information came from.
 """
 
 rag_chat_prompt = ChatPromptTemplate.from_messages([
