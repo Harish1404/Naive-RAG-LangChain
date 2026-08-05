@@ -1,5 +1,8 @@
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langsmith import traceable
+
 from app.core.config import settings
+from app.core.tracing import drop_self
 
 
 class EmbeddingModel:
@@ -23,7 +26,20 @@ class EmbeddingModel:
             return []
         return await self.embeddings.aembed_documents(texts)
 
+    @traceable(
+        run_type="embedding",
+        name="embed_query",
+        process_inputs=drop_self,
+        # A 768-float vector is not worth reading in a trace — record its size.
+        process_outputs=lambda vector: {"dimensions": len(vector) if vector else 0},
+    )
     async def embed_query(self, text: str) -> list[float]:
-        """Embeds a single piece of text — used for a user's question."""
+        """
+        Embeds a single piece of text — used for a user's question.
+
+        Decorated because GoogleGenerativeAIEmbeddings does not report to
+        LangSmith on its own, unlike the chat models. Without this the
+        embedding step is simply invisible in the trace.
+        """
         return await self.embeddings.aembed_query(text)
 

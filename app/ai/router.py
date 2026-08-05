@@ -3,8 +3,10 @@ import logging
 from langchain_groq import ChatGroq
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.output_parsers import StrOutputParser
+from langsmith import traceable
 
 from app.core.config import settings
+from app.core.tracing import drop_self
 from app.prompts.router_prompt import ROUTER_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -45,8 +47,14 @@ class QueryRouter:
         # The whole router, as one LCEL pipeline
         self.chain = ROUTER_PROMPT | llm | StrOutputParser()
 
+    @traceable(run_type="chain", name="route_query", process_inputs=drop_self)
     async def route(self, query: str) -> str:
-        """Returns one of RAG / TOOL / BOTH / DIRECT."""
+        """
+        Returns one of RAG / TOOL / BOTH / DIRECT.
+
+        The inner LCEL chain traces itself as a child of this span, so the
+        dashboard shows both the raw model output and the validated decision.
+        """
         try:
             raw = await self.chain.ainvoke({"question": query})
             route = raw.strip().upper().strip(".,!:;\"'`")

@@ -1,6 +1,9 @@
 import asyncio
 import logging
 from pymongo import UpdateOne
+from langsmith import traceable
+
+from app.core.tracing import drop_self, drop_self_and_embedding, as_documents
 from app.db.mongodb import get_vector_collection
 
 logger = logging.getLogger("uvicorn")
@@ -124,6 +127,12 @@ class VectorStore:
             await self.ensure_keyword_index()
 
 
+    @traceable(
+        run_type="retriever",
+        name="vector_search",
+        process_inputs=drop_self_and_embedding,
+        process_outputs=as_documents,
+    )
     async def vector_search(self, query_embedding: list[float], top_k: int = 4) -> list[dict]:
         """Finds the `top_k` chunks most similar to the query embedding using MongoDB Atlas Vector Search."""
         collection = self._get_collection()
@@ -170,6 +179,12 @@ class VectorStore:
             )
             return []
 
+    @traceable(
+        run_type="retriever",
+        name="keyword_search",
+        process_inputs=drop_self,
+        process_outputs=as_documents,
+    )
     async def keyword_search(self, query_text: str, top_k: int = 4) -> list[dict]:
         """Finds the `top_k` chunks whose text best matches `query_text` using MongoDB Atlas Search (keyword search)."""
         collection = self._get_collection()
@@ -213,6 +228,12 @@ class VectorStore:
             )
             return []
 
+    @traceable(
+        run_type="chain",
+        name="reciprocal_rank_fusion",
+        process_inputs=drop_self,
+        process_outputs=as_documents,
+    )
     def _reciprocal_rank_fusion(self, result_lists: list[list[dict]], k: int = 60) -> list[dict]:
         """
         Combines several ranked result lists into one, using Reciprocal Rank Fusion (RRF).
@@ -242,6 +263,12 @@ class VectorStore:
             for chunk_id in ranked_ids
         ]
 
+    @traceable(
+        run_type="retriever",
+        name="hybrid_search",
+        process_inputs=drop_self_and_embedding,
+        process_outputs=as_documents,
+    )
     async def hybrid_search(self, query_text: str, query_embedding: list[float], top_k: int = 4) -> list[dict]:
         """
         Hybrid search: retrieves candidates from vector search AND keyword search in

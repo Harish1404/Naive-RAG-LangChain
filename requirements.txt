@@ -7,6 +7,7 @@ langchain-text-splitters
 langchain-groq
 langchain-google-genai
 langchain
+langsmith
 
 python-dotenv
 requests

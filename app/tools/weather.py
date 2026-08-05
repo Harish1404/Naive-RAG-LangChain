@@ -12,7 +12,7 @@ def get_weather(city: str) -> str:
     try:
         response = requests.post(
             settings.weather_webhook_url,
-            json=data,
+            json=data,                      
             timeout=10
         )
         if response.status_code != 200:

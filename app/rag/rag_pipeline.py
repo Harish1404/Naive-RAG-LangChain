@@ -1,5 +1,8 @@
 import logging
 
+from langsmith import traceable
+
+from app.core.tracing import drop_self, as_documents
 from app.rag.data_processor import process_folder
 from app.rag.embeddings import EmbeddingModel
 from app.rag.vector_store import VectorStore
@@ -52,6 +55,12 @@ class RAGPipeline:
         logger.info(f"Successfully ingested {len(new_chunks)} new chunk(s) into MongoDB Atlas.")
         return len(new_chunks)
 
+    @traceable(
+        run_type="retriever",
+        name="rag_retrieve",
+        process_inputs=drop_self,
+        process_outputs=as_documents,
+    )
     async def retrieve(self, query: str, top_k: int = 4) -> list[dict]:
         """Returns the `top_k` chunks most relevant to the given query, using hybrid search."""
         query_embedding = await self.embedding_model.embed_query(query)

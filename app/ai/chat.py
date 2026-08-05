@@ -5,7 +5,14 @@ import traceback
 from langchain_groq import ChatGroq
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
+from langsmith import traceable
 
+from app.core.tracing import (
+    summarize_messages,
+    join_tokens,
+    set_run_inputs,
+    set_run_metadata,
+)
 from app.prompts.rag_prompt import RAG_SYSTEM_PROMPT, build_context_text
 from app.prompts.router_prompt import (
     TOOL_SYSTEM_PROMPT,
@@ -79,13 +86,32 @@ class ChatService:
 
     # ── Entry point ──────────────────────────────────────────────────────────
 
+    @traceable(
+        run_type="chain",
+        name="chatbot_request",
+        reduce_fn=join_tokens,
+    )
     async def chat(self):
         """
         Routes the query, then streams plain text tokens from the chosen path.
+
+        This is also the ROOT of the LangSmith trace. Every LLM call, tool call
+        and retrieval below it nests under this one span, which is what turns a
+        handful of disconnected dashboard rows into a single request tree.
         """
+        # This method takes no arguments other than `self`, which langsmith
+        # strips — so the question has to be published onto the span by hand,
+        # or the dashboard would show the answer with no sign of the input.
+        set_run_inputs(user_prompt=self.user_prompt)
+
         try:
             route = await query_router.route(self.user_prompt)
             logger.info(f"Router selected: {route} for query: {self.user_prompt!r}")
+
+            # The route is only known now, so it is attached at runtime rather
+            # than declared on the decorator. Lets you filter the dashboard by
+            # metadata.route to compare paths.
+            set_run_metadata(route=route)
 
             if route == "RAG":
                 stream = self._rag_stream()
@@ -105,8 +131,15 @@ class ChatService:
 
     # ── Route: RAG ───────────────────────────────────────────────────────────
 
+    @traceable(
+        run_type="chain",
+        name="rag_answer",
+        reduce_fn=join_tokens,
+    )
     async def _rag_stream(self):
         """Answers strictly from resume chunks retrieved out of MongoDB Atlas."""
+        set_run_inputs(user_prompt=self.user_prompt)
+
         retrieved_chunks = await rag_pipeline.retrieve(self.user_prompt)
         context_text = build_context_text(retrieved_chunks)
 
@@ -121,8 +154,15 @@ class ChatService:
 
     # ── Route: TOOL ──────────────────────────────────────────────────────────
 
+    @traceable(
+        run_type="chain",
+        name="tool_answer",
+        reduce_fn=join_tokens,
+    )
     async def _tool_stream(self):
         """Answers using the weather tool only. No retrieval happens here."""
+        set_run_inputs(user_prompt=self.user_prompt)
+
         messages = [
             SystemMessage(content=TOOL_SYSTEM_PROMPT),
             HumanMessage(content=self.user_prompt)
@@ -133,11 +173,18 @@ class ChatService:
 
     # ── Route: BOTH ──────────────────────────────────────────────────────────
 
+    @traceable(
+        run_type="chain",
+        name="rag_plus_tool_answer",
+        reduce_fn=join_tokens,
+    )
     async def _both_stream(self):
         """
         Retrieves resume context first (so the model can read a city out of it),
         then runs the same tool loop.
         """
+        set_run_inputs(user_prompt=self.user_prompt)
+
         retrieved_chunks = await rag_pipeline.retrieve(self.user_prompt)
         context_text = build_context_text(retrieved_chunks)
 
@@ -151,8 +198,15 @@ class ChatService:
 
     # ── Route: DIRECT ────────────────────────────────────────────────────────
 
+    @traceable(
+        run_type="chain",
+        name="direct_answer",
+        reduce_fn=join_tokens,
+    )
     async def _direct_stream(self):
         """Answers from the model's own knowledge. No retrieval, no tools."""
+        set_run_inputs(user_prompt=self.user_prompt)
+
         messages = [
             SystemMessage(content=DIRECT_SYSTEM_PROMPT),
             HumanMessage(content=self.user_prompt)
@@ -164,6 +218,12 @@ class ChatService:
 
     # ── The tool-calling loop, written out by hand ───────────────────────────
 
+    @traceable(
+        run_type="chain",
+        name="tool_loop",
+        process_inputs=summarize_messages,
+        reduce_fn=join_tokens,
+    )
     async def _run_tool_loop(self, messages: list):
         """
         A single tool-call round-trip, using only langchain-core primitives:
