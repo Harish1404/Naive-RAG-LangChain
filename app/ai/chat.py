@@ -1,10 +1,11 @@
+import asyncio
 import json
 import logging
 import traceback
 
 from langchain_groq import ChatGroq
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
+from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, ToolMessage
 from langsmith import traceable
 
 from app.core.tracing import (
@@ -13,6 +14,7 @@ from app.core.tracing import (
     set_run_inputs,
     set_run_metadata,
 )
+from app.memory.store import conversation_store
 from app.prompts.rag_prompt import RAG_SYSTEM_PROMPT, build_context_text
 from app.prompts.router_prompt import (
     TOOL_SYSTEM_PROMPT,
@@ -26,6 +28,39 @@ from app.tools.weather import get_weather
 
 # logger lets us print debug/error messages to the console with proper labels
 logger = logging.getLogger(__name__)
+
+# Strong references to detached history writes. asyncio only keeps a weak
+# reference to a running task, so without this a fire-and-forget write can be
+# garbage collected mid-flight and silently never happen.
+_pending_writes: set[asyncio.Task] = set()
+
+
+def content_to_text(content) -> str:
+    """
+    Flattens a message's content down to plain text.
+
+    Groq hands back a plain string, but Gemini — which is what the fallback
+    switches to whenever Groq rate-limits — can return a list of content
+    parts instead. A raw list breaks in two places at once: Starlette calls
+    .encode() on whatever the stream yields, and the history accumulator
+    joins the tokens into one answer. Both need a str.
+    """
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+        pieces = []
+        for part in content:
+            if isinstance(part, str):
+                pieces.append(part)
+            elif isinstance(part, dict):
+                pieces.append(part.get("text") or "")
+        return "".join(pieces)
+
+    if content is None:
+        return ""
+
+    return str(content)
 
 
 def format_sse_event(event_type: str, content: str) -> str:
@@ -50,10 +85,32 @@ class ChatService:
 
     This is the fix for the old behaviour, where retrieval always ran and the
     weather tool was always available, so both fired for every single question.
+
+    The service is also the memory boundary: it is handed the conversation's
+    recent history to replay, and it is what writes the finished answer back.
     """
 
-    def __init__(self, model_type: str, user_prompt: str):
+    def __init__(
+        self,
+        user_prompt: str,
+        conversation_id: str,
+        history: list[BaseMessage] | None = None,
+    ):
         self.user_prompt = user_prompt
+        self.conversation_id = conversation_id
+
+        # The window buffer, already trimmed to the last k turns by the caller.
+        self.history = list(history or [])
+
+        # Filled in once the router has run.
+        self.route: str | None = None
+
+        # What retrieval actually searches for: the question with its
+        # back-references resolved. Falls back to the raw prompt.
+        self.search_query = user_prompt
+        
+        # Tool activity, recorded for the stored message's metadata.
+        self.tool_calls: list[dict] = []
 
         self.gemini_key = settings.gemini_api_key
         self.groq_key   = settings.groq_api_key
@@ -102,32 +159,80 @@ class ChatService:
         # This method takes no arguments other than `self`, which langsmith
         # strips — so the question has to be published onto the span by hand,
         # or the dashboard would show the answer with no sign of the input.
-        set_run_inputs(user_prompt=self.user_prompt)
+        set_run_inputs(
+            user_prompt=self.user_prompt,
+            conversation_id=self.conversation_id,
+        )
+
+        # Nothing else buffers the answer — the tokens are streamed straight to
+        # the client — so it is collected here to be written to MongoDB.
+        parts: list[str] = []
+        completed = False
+        abandoned = False
 
         try:
-            route = await query_router.route(self.user_prompt)
-            logger.info(f"Router selected: {route} for query: {self.user_prompt!r}")
+            decision = await query_router.route(self.user_prompt, self.history)
+            self.route = decision.route
+            self.search_query = decision.standalone_question
+
+            logger.info(
+                f"Router selected: {self.route} for query: {self.user_prompt!r} "
+                f"(searching for: {self.search_query!r})"
+            )
 
             # The route is only known now, so it is attached at runtime rather
             # than declared on the decorator. Lets you filter the dashboard by
-            # metadata.route to compare paths.
-            set_run_metadata(route=route)
+            # metadata.route to compare paths. thread_id is what groups every
+            # turn of one conversation into a single LangSmith thread.
+            set_run_metadata(
+                route=self.route,
+                conversation_id=self.conversation_id,
+                thread_id=self.conversation_id,
+                standalone_question=self.search_query,
+                history_messages=len(self.history),
+            )
 
-            if route == "RAG":
+            if self.route == "RAG":
                 stream = self._rag_stream()
-            elif route == "TOOL":
+            elif self.route == "TOOL":
                 stream = self._tool_stream()
-            elif route == "BOTH":
+            elif self.route == "BOTH":
                 stream = self._both_stream()
             else:
                 stream = self._direct_stream()
 
             async for token in stream:
+                parts.append(token)
                 yield token
+
+            completed = True
+
+        except GeneratorExit:
+            # The client went away mid-answer and this generator is being torn
+            # down. Flagged rather than handled here, so the finally below can
+            # tell an abandoned stream apart from a finished one.
+            abandoned = True
+            raise
 
         except Exception as e:
             logger.error(f"Chat pipeline execution failed: {e}\n{traceback.format_exc()}")
             yield f"\n[ERROR: Chat service error — {e}]"
+
+        finally:
+            answer = "".join(parts)
+
+            if abandoned:
+                # Cannot await here. An abandoned async generator is finalized
+                # by the event loop after aclose() has already returned, and an
+                # await at that point is cancelled — the write would be issued
+                # and then silently dropped. Handing it to an independent task
+                # gets it off this dying frame. Best-effort by nature.
+                self._schedule_persist(answer)
+            else:
+                # Normal and error paths still have a live request behind them,
+                # so this is awaited: the next turn must not be able to load
+                # history before this answer has landed.
+                await self._persist_answer(answer, completed)
 
     # ── Route: RAG ───────────────────────────────────────────────────────────
 
@@ -138,19 +243,23 @@ class ChatService:
     )
     async def _rag_stream(self):
         """Answers strictly from resume chunks retrieved out of MongoDB Atlas."""
-        set_run_inputs(user_prompt=self.user_prompt)
+        set_run_inputs(user_prompt=self.user_prompt, search_query=self.search_query)
 
-        retrieved_chunks = await rag_pipeline.retrieve(self.user_prompt)
+        # Retrieval uses the router's rewritten question, not the raw one: a
+        # follow-up such as "and where did he study?" has nothing to embed.
+        retrieved_chunks = await rag_pipeline.retrieve(self.search_query)
         context_text = build_context_text(retrieved_chunks)
 
         messages = [
             SystemMessage(content=RAG_SYSTEM_PROMPT),
+            *self.history,
             HumanMessage(content=f"Context:\n{context_text}\n\nQuestion: {self.user_prompt}")
         ]
 
         async for chunk in self.llm_with_fallbacks.astream(messages):
-            if chunk.content:
-                yield chunk.content
+            text = content_to_text(chunk.content)
+            if text:
+                yield text
 
     # ── Route: TOOL ──────────────────────────────────────────────────────────
 
@@ -163,8 +272,12 @@ class ChatService:
         """Answers using the weather tool only. No retrieval happens here."""
         set_run_inputs(user_prompt=self.user_prompt)
 
+        # A fresh list every call: _run_tool_loop appends to what it is given,
+        # and self.history must never be mutated — it is replayed as-is and
+        # would otherwise accumulate tool messages across turns.
         messages = [
             SystemMessage(content=TOOL_SYSTEM_PROMPT),
+            *self.history,
             HumanMessage(content=self.user_prompt)
         ]
 
@@ -183,13 +296,14 @@ class ChatService:
         Retrieves resume context first (so the model can read a city out of it),
         then runs the same tool loop.
         """
-        set_run_inputs(user_prompt=self.user_prompt)
+        set_run_inputs(user_prompt=self.user_prompt, search_query=self.search_query)
 
-        retrieved_chunks = await rag_pipeline.retrieve(self.user_prompt)
+        retrieved_chunks = await rag_pipeline.retrieve(self.search_query)
         context_text = build_context_text(retrieved_chunks)
 
         messages = [
             SystemMessage(content=BOTH_SYSTEM_PROMPT),
+            *self.history,
             HumanMessage(content=f"Resume context:\n{context_text}\n\nQuestion: {self.user_prompt}")
         ]
 
@@ -209,12 +323,14 @@ class ChatService:
 
         messages = [
             SystemMessage(content=DIRECT_SYSTEM_PROMPT),
+            *self.history,
             HumanMessage(content=self.user_prompt)
         ]
 
         async for chunk in self.llm_with_fallbacks.astream(messages):
-            if chunk.content:
-                yield chunk.content
+            text = content_to_text(chunk.content)
+            if text:
+                yield text
 
     # ── The tool-calling loop, written out by hand ───────────────────────────
 
@@ -240,8 +356,9 @@ class ChatService:
 
         # The model answered directly without reaching for a tool.
         if not getattr(ai_msg, "tool_calls", None):
-            if ai_msg.content:
-                yield ai_msg.content
+            text = content_to_text(ai_msg.content)
+            if text:
+                yield text
             return
 
         messages.append(ai_msg)
@@ -253,6 +370,11 @@ class ChatService:
                 continue
 
             logger.info(f"Calling tool {name} with args {tool_call.get('args')}")
+
+            # Kept for the stored message's metadata. Note this is recorded,
+            # not replayed — see ConversationStore.append_message.
+            self.tool_calls.append({"name": name, "args": tool_call.get("args")})
+
             try:
                 result = await get_weather.ainvoke(tool_call["args"])
             except Exception as e:
@@ -262,8 +384,61 @@ class ChatService:
             messages.append(ToolMessage(content=str(result), tool_call_id=tool_call["id"]))
 
         async for chunk in self.llm_with_fallbacks.astream(messages):
-            if chunk.content:
-                yield chunk.content
+            text = content_to_text(chunk.content)
+            if text:
+                yield text
+
+    # ── Persistence ─────────────────────────────────────────────────────────
+
+    def _schedule_persist(self, answer: str) -> None:
+        """
+        Saves a cut-off answer from outside this generator's teardown.
+
+        Synchronous on purpose — it only schedules the write. See the note in
+        chat()'s finally for why awaiting from a finalizing generator does not
+        work: aclose() has already returned by then and the await is cancelled.
+        """
+        if not answer.strip():
+            return
+
+        try:
+            task = asyncio.create_task(self._persist_answer(answer, completed=False))
+        except RuntimeError as e:
+            # No running loop — the app is shutting down. Nothing to be done.
+            logger.warning(
+                f"Could not schedule partial answer for {self.conversation_id}: {e}"
+            )
+            return
+
+        _pending_writes.add(task)
+        task.add_done_callback(_pending_writes.discard)
+
+    async def _persist_answer(self, answer: str, completed: bool) -> None:
+        """
+        Writes the finished answer to MongoDB so the next turn can see it.
+
+        Two deliberate choices here. Nothing is stored for an empty answer,
+        which keeps a failed turn's error text out of the replayed history.
+        And a write failure is logged, never raised — the user already has
+        their answer on screen by this point, and turning a storage hiccup
+        into a broken response would be a worse trade.
+        """
+        if not answer.strip():
+            return
+
+        try:
+            await conversation_store.append_message(
+                self.conversation_id,
+                role="assistant",
+                content=answer,
+                route=self.route,
+                tool_calls=self.tool_calls,
+                partial=not completed,
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to persist assistant message for {self.conversation_id}: {e}"
+            )
 
     # ────────────────────────────────────────────────────────────────────────
     # OPTIONAL: SSE EVENT STREAMING (Uncomment when connecting to a Frontend UI)

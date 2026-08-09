@@ -76,8 +76,14 @@ Langchain-RAG/
 │   │   ├── embeddings.py     # Gemini GoogleGenerativeAIEmbeddings (768d)
 │   │   ├── rag_pipeline.py   # Ingestion & retrieval orchestrator singleton
 │   │   └── vector_store.py   # MongoDB Atlas Vector/Keyword search & RRF implementation
+│   ├── memory/
+│   │   ├── store.py          # MongoDB persistence for conversations & messages
+│   │   └── window.py         # Window buffer: last k turns -> LangChain messages
+│   ├── schemas/
+│   │   └── chat.py           # Pydantic request/response models
 │   ├── routes/
-│   │   └── chatbot.py        # FastAPI APIRouter streaming SSE endpoint (/chatbot)
+│   │   ├── chatbot.py        # FastAPI APIRouter streaming endpoint (/chatbot)
+│   │   └── conversations.py  # Conversation CRUD (new chat, list, transcript, rename, delete)
 │   └── main.py               # FastAPI app initialization, lifespan handler & health routes
 ├── docs/                     # Technical architecture, workflow, and RAG guides
 ├── uploads/                  # Input directory for knowledge base documents (.pdf, .txt, .md)
@@ -105,6 +111,19 @@ DB_NAME=rag_db
 
 # External Tools & Webhooks
 WEATHER_WEBHOOK_URL=https://your-webhook-endpoint.com
+
+# LangSmith Tracing (optional — tracing is off unless LANGSMITH_TRACING=true)
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=your_langsmith_key
+LANGSMITH_ENDPOINT=https://api.smith.langchain.com
+LANGSMITH_PROJECT=your_project_name
+# Required when the API key is org-scoped rather than workspace-scoped
+LANGSMITH_WORKSPACE_ID=your_workspace_id
+
+# Conversation memory window (all optional — defaults shown)
+WINDOW_K=4                    # turns replayed to the model
+WINDOW_K_LARGE=5              # turns once a thread gets long
+LARGE_HISTORY_THRESHOLD=100   # turn count at which the wider window kicks in
 ```
 
 ---
@@ -139,17 +158,64 @@ WEATHER_WEBHOOK_URL=https://your-webhook-endpoint.com
 ## 📡 API Endpoint Reference
 
 ### `POST /chatbot`
-Streams real-time Server-Sent Events (SSE) responses.
+Streams the answer back as plain text tokens.
 
-- **Query Parameters**:
-  - `model_type` (`str`): Selects model configuration (e.g. `"default"`).
-  - `user_prompt` (`str`): The question or command for the assistant.
+- **JSON Body**:
+  - `user_prompt` (`str`, required): The question or command for the assistant.
+  - `conversation_id` (`str`, optional): Continue an existing thread. Omit it to start a new one.
+  - `user_id` (`str`, optional): Defaults to `"default_user"`.
+
+- **Response Header**:
+  - `X-Conversation-Id`: The thread this message landed in — read it on the first
+    message to learn the id of a newly created conversation.
 
 - **Example Request**:
   ```bash
-  curl -X POST "http://127.0.0.1:8000/chatbot?model_type=default&user_prompt=What%20is%20the%20weather%20in%20London%3F" \
-       -H "accept: text/event-stream"
+  # New chat (id comes back in the header)
+  curl -N -D - -X POST "http://127.0.0.1:8000/chatbot" \
+       -H "Content-Type: application/json" \
+       -d '{"user_prompt": "Who is Harish?"}'
+
+  # Continue that chat — follow-ups can rely on the previous turns
+  curl -N -X POST "http://127.0.0.1:8000/chatbot" \
+       -H "Content-Type: application/json" \
+       -d '{"conversation_id": "conv_...", "user_prompt": "what are his skills?"}'
   ```
+
+### Conversation management
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/conversations` | Start a new chat explicitly |
+| `GET` | `/conversations?user_id=&limit=&skip=` | List threads, most recently active first |
+| `GET` | `/conversations/{id}?limit=&before_seq=` | Full transcript, oldest message first |
+| `PATCH` | `/conversations/{id}` | Rename (`{"title": "..."}`) |
+| `DELETE` | `/conversations/{id}` | Soft delete |
+
+---
+
+## 🧠 Conversation Memory
+
+Chat history is persisted in MongoDB across two collections — `conversations`
+(one per thread: title, owner, counters) and `messages` (one per turn, ordered
+by `seq`).
+
+On each request the last **k turns** are replayed to the model — a window
+buffer, equivalent to the old `ConversationBufferWindowMemory(k=...)`, but
+implemented natively over the async Motor client. (LangChain 1.0 removed
+`langchain.memory` entirely, and its MongoDB backend was blocking pymongo,
+which would stall the event loop in these async endpoints.) `k` defaults to 4
+and widens to 5 once a thread passes 100 turns; all three values are tunable
+via `WINDOW_K`, `WINDOW_K_LARGE` and `LARGE_HISTORY_THRESHOLD` in `.env`.
+
+The query router is history-aware: it returns both the route **and** a
+rewritten, self-contained version of the question. That rewrite is what gets
+embedded for retrieval, so a follow-up like *"and where did he study?"* — which
+on its own contains nothing searchable — still finds the right chunks.
+
+Tool calls are recorded as message metadata but never replayed as
+`AIMessage.tool_calls` / `ToolMessage` pairs; a tool call replayed without its
+result is rejected outright by the Groq API.
 
 ---
 

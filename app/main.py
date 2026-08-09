@@ -1,12 +1,20 @@
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.routes.chatbot import router as chatbot_router
+from app.routes.conversations import router as conversations_router
 from app.rag.rag_pipeline import rag_pipeline
 from app.core.tracing import verify_langsmith_connection
-from app.db.mongodb import connect_to_mongo, close_mongo_connection, get_database_client
+from app.db.mongodb import (
+    connect_to_mongo,
+    close_mongo_connection,
+    get_database_client,
+    ensure_chat_indexes,
+)
+from app.tools.weather import close_client as close_weather_client
 
 
 # Configure logging to output INFO level logs to terminal
@@ -27,6 +35,7 @@ async def lifespan(app: FastAPI):
     app.state.langsmith = await verify_langsmith_connection()
 
     await connect_to_mongo()
+    await ensure_chat_indexes()
     chunk_count = await rag_pipeline.ingest("uploads")
     logger.info(f"RAG startup ingestion complete: {chunk_count} new chunk(s) indexed.")
     yield
@@ -42,11 +51,26 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Could not flush LangSmith traces: {e}")
 
+    await close_weather_client()
     await close_mongo_connection()
 
 
 app = FastAPI(lifespan=lifespan)
+
+# Dev defaults. `expose_headers` is the part that matters: without it a browser
+# cannot read X-Conversation-Id off the streaming response at all, so a new
+# chat would have no way to learn its own id. Tighten allow_origins for prod.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["X-Conversation-Id"],
+)
+
 app.include_router(chatbot_router)
+app.include_router(conversations_router)
 
 
 

@@ -4,50 +4,57 @@ from langchain_core.prompts import ChatPromptTemplate
 # The router prompt: classifies a user query into ONE route
 # ─────────────────────────────────────────────────────────
 
-ROUTER_INSTRUCTIONS = """You are a query router. Classify the user's question into exactly ONE category.
+ROUTER_INSTRUCTIONS = """You are a query router for a resume chatbot. You do two jobs at once.
 
-Categories:
-- RAG    -> questions about the resume: work history, employers, job titles, skills,
-            education, certifications, projects, achievements, contact details.
-- TOOL   -> questions about current weather, temperature, rain, or forecast for a place.
-- BOTH   -> questions that need the resume AND the weather together
-            (for example, asking about the weather in a city mentioned in the resume).
+JOB 1 - Rewrite the latest question so it stands on its own.
+The user is in the middle of a conversation, so the latest question often leans on what
+was said earlier: pronouns like "he" or "it", references like "there", "that job",
+"the second one", or fragments like "and tomorrow?". Using the conversation history,
+rewrite the question into a complete, self-contained one with every reference resolved,
+as if it were being asked cold. Preserve the user's intent exactly - never answer the
+question, never add information that is not in the history, and never invent details.
+If the question already stands on its own, repeat it unchanged.
+This rewritten question is what gets used to search the resume, so it matters that any
+name or place the user is really asking about actually appears in it.
+
+JOB 2 - Classify the REWRITTEN question into exactly ONE route.
+- RAG    -> the resume: work history, employers, job titles, skills, education,
+            certifications, projects, achievements, contact details. This also covers
+            "who is <name>" and any question about the person the resume belongs to -
+            the resume is the only place this chatbot knows anything about them.
+- TOOL   -> current weather, temperature, rain, or forecast for a place.
+- BOTH   -> needs the resume AND the weather together, for example asking about the
+            weather in a city that has to be looked up in the resume first.
 - DIRECT -> anything else: greetings, small talk, general knowledge, coding questions,
             definitions, or requests unrelated to the resume and the weather.
 
-Rules:
-- Reply with exactly one word: RAG, TOOL, BOTH, or DIRECT.
-- No punctuation, no explanation, no extra text.
+Examples (history -> latest question -> route / rewritten question):
 
-Examples:
-Question: What are my technical skills?
-Answer: RAG
+- No history. "What are my technical skills?"
+  -> RAG / "What are my technical skills?"
 
-Question: Where did I work before my current job?
-Answer: RAG
+- No history. "How hot is it in Chennai right now?"
+  -> TOOL / "How hot is it in Chennai right now?"
 
-Question: Will I need an umbrella in Bangalore tomorrow?
-Answer: TOOL
+- No history. "Who is Harish?"
+  -> RAG / "Who is Harish?"
 
-Question: How hot is it in Chennai right now?
-Answer: TOOL
+- History says the user worked at Acme in Bangalore. "What was his title there?"
+  -> RAG / "What was the user's job title at Acme in Bangalore?"
 
-Question: What city is on my resume and what is the weather like there?
-Answer: BOTH
+- History says the assistant just gave the weather in Chennai. "and tomorrow?"
+  -> TOOL / "What is the weather forecast in Chennai tomorrow?"
 
-Question: Is it raining in the city where I did my internship?
-Answer: BOTH
+- No history. "Is it raining in the city where I did my internship?"
+  -> BOTH / "Is it raining in the city where I did my internship?"
 
-Question: Hi there
-Answer: DIRECT
-
-Question: Explain what a vector database is
-Answer: DIRECT
+- No history. "Explain what a vector database is"
+  -> DIRECT / "Explain what a vector database is"
 """
 
 ROUTER_PROMPT = ChatPromptTemplate.from_messages([
     ("system", ROUTER_INSTRUCTIONS),
-    ("human", "Question: {question}\nAnswer:")
+    ("human", "Conversation so far:\n{history}\n\nLatest question: {question}"),
 ])
 
 

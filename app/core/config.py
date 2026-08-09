@@ -22,6 +22,15 @@ class Settings:
     MONGO_URL = os.getenv("MONGO_URL")
     DB_NAME = os.getenv("DB_NAME")
 
+    # ── Conversation memory (window buffer) ──────────────────────────────────
+    # How many past TURNS (a user message + its answer) are replayed to the
+    # model. Tunable without a code edit, because the right number depends on
+    # the model's context window and how chatty the answers are.
+    WINDOW_K = int(os.getenv("WINDOW_K", "4"))
+    # Long threads get a slightly wider window.
+    WINDOW_K_LARGE = int(os.getenv("WINDOW_K_LARGE", "5"))
+    LARGE_HISTORY_THRESHOLD = int(os.getenv("LARGE_HISTORY_THRESHOLD", "100"))
+
     @property
     def tracing_enabled(self) -> bool:
         return str(self.LANGSMITH_TRACING).lower() == "true" and bool(self.LANGSMITH_API_KEY)
