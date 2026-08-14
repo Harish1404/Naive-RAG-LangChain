@@ -4,6 +4,7 @@ import os
 load_dotenv()
 
 class Settings:
+    FRONTEND_URL = os.getenv("FRONTEND_URL")
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
     GROQ_API_KEY = os.getenv("GROQ_API_KEY")
     FLUX_AI = os.getenv("FLUX_AI")

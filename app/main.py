@@ -77,8 +77,8 @@ app = FastAPI(lifespan=lifespan)
 # chat would have no way to learn its own id. Tighten allow_origins for prod.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    allow_origins=[settings.FRONTEND_URL, "http://localhost:3000"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["X-Conversation-Id"],
