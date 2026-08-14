@@ -36,6 +36,8 @@ ALLOWED_ORIGINS = {
     "http://localhost:3000",
     "http://127.0.0.1:3000",
 }
+if settings.FRONTEND_URL:
+    ALLOWED_ORIGINS.add(settings.FRONTEND_URL.rstrip("/"))
 
 # A 16 kHz mono PCM16 second is 32 KB. This caps one utterance at ~60s, which
 # stops a stuck client from growing the buffer without bound.
@@ -68,7 +70,7 @@ class Turn:
 @router.websocket("/ws/voice")
 async def voice_socket(websocket: WebSocket):
     origin = websocket.headers.get("origin")
-    if origin is not None and origin not in ALLOWED_ORIGINS:
+    if origin is not None and origin.rstrip("/") not in ALLOWED_ORIGINS:
         logger.warning(f"Rejected voice socket from origin {origin!r}")
         await websocket.close(code=1008)
         return
