@@ -1,13 +1,23 @@
 fastapi
 uvicorn
 
+# Voice mode. ElevenLabs is driven over its raw WebSocket via `websockets`
+# rather than through the `elevenlabs` SDK — the streaming protocol is about 40
+# readable lines and the SDK wrapper hides exactly the part worth seeing.
+groq
+websockets
+httpx
+pydantic
+
 langchain-core
 langchain-community
 langchain-text-splitters
 langchain-groq
 langchain-google-genai
+langchain-mcp-adapters
 langchain
 langsmith
+
 
 python-dotenv
 requests

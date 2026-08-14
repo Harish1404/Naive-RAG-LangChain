@@ -37,3 +37,6 @@ scratch/
 # OS Generated Files
 .DS_Store
 Thumbs.db
+
+# TTS cache (voice mode)
+.tts_cache/

@@ -4,6 +4,9 @@
 > §2 for the map. §3–§8 walk through one request end to end. §9 collects the design
 > decisions and the reasoning behind each one — that section is the most useful if
 > you are learning from this codebase rather than working on it.
+>
+> The spoken path — microphone in, synthesised speech out — has its own walkthrough in
+> [voice-mode.md](voice-mode.md).
 
 ---
 
@@ -25,56 +28,37 @@ Three ideas do most of the work:
 
 ## 2. The map
 
-Four layers, plus the outside world. Everything above the database is stateless — all
-state lives in MongoDB, so restarting the server loses nothing.
+Two ways in — a streaming HTTP endpoint for typed questions and a WebSocket for spoken
+ones — converging on the same `ChatService`. Everything above the database is stateless;
+all state lives in MongoDB, so restarting the server loses nothing.
 
 ```mermaid
-graph TB
-    subgraph CLIENT["Client"]
-        UI["Browser / curl<br/>holds a conversation_id"]
-    end
+graph TD
+    UI[Client<br/>holds a conversation_id] --> CHATEP(POST /chatbot<br/>routes/chatbot.py)
+    UI --> VOICEEP(WS /ws/voice<br/>routes/voice.py)
+    UI --> CONVEP(/conversations CRUD<br/>routes/conversations.py)
 
-    subgraph API["API Layer &mdash; app/routes/"]
-        CHATEP["POST /chatbot<br/>chatbot.py"]
-        CONVEP["/conversations CRUD<br/>conversations.py"]
-    end
+    VOICEEP --> STT(Groq Whisper<br/>ai/voice.py)
+    STT --> SERVICE
+    CHATEP --> SERVICE(ChatService<br/>four answer paths<br/>ai/chat.py)
 
-    subgraph AI["AI Layer &mdash; app/ai/"]
-        ROUTER["QueryRouter<br/>picks route + rewrites question"]
-        SERVICE["ChatService<br/>four answer paths"]
-    end
+    SERVICE --> ROUTER(QueryRouter<br/>route + rewritten question<br/>ai/router.py)
+    SERVICE --> WINDOW(window.py<br/>last k turns)
+    SERVICE --> PIPE{RAGPipeline.retrieve}
+    SERVICE --> HOOK[Weather webhook]
+    SERVICE --> LLM[Groq llama-3.1-8b<br/>Gemini 2.5 Flash fallback]
+    SERVICE --> TTS(ElevenLabs stream-input<br/>ai/voice.py)
+    TTS --> VOICEEP
 
-    subgraph MEM["Memory Layer &mdash; app/memory/"]
-        WINDOW["window.py<br/>last k turns"]
-        STORE["store.py<br/>reads / writes messages"]
-    end
-
-    subgraph RAG["Retrieval Layer &mdash; app/rag/"]
-        PIPE["RAGPipeline.retrieve"]
-        HYB["Hybrid search<br/>vector + keyword + RRF"]
-    end
-
-    subgraph EXT["External services"]
-        LLM["Groq llama-3.1-8b<br/>Gemini 2.5 Flash fallback"]
-        HOOK["Weather webhook"]
-        DB[("MongoDB Atlas<br/>rag_db")]
-    end
-
-    UI --> CHATEP
-    UI --> CONVEP
-    CONVEP --> STORE
-    CHATEP --> STORE
-    CHATEP --> WINDOW
-    CHATEP --> SERVICE
-    WINDOW --> STORE
-    SERVICE --> ROUTER
     ROUTER --> LLM
-    SERVICE --> PIPE
-    SERVICE --> HOOK
-    SERVICE --> LLM
-    SERVICE --> STORE
-    PIPE --> HYB
-    HYB --> DB
+    PIPE -->|Dense| VEC[(Vector search)]
+    PIPE -->|Sparse| KEY[(Keyword search)]
+    VEC --> RRF(RRF merge)
+    KEY --> RRF
+    RRF --> DB[(MongoDB Atlas<br/>rag_db)]
+
+    WINDOW --> STORE(store.py<br/>reads / writes messages)
+    CONVEP --> STORE
     STORE --> DB
 ```
 
@@ -173,18 +157,9 @@ All three are read from `.env` via `app/core/config.py`, so tuning needs no code
 
 ```mermaid
 graph LR
-    OLD["Turns 1-8<br/>stored in MongoDB<br/>but NOT replayed"]
-    KEEP["Turns 9-12<br/>the window"]
-    NEW["Turn 13<br/>the new question"]
-    PROMPT["Prompt sent to the model"]
-
-    OLD -. forgotten .-> PROMPT
-    KEEP --> PROMPT
-    NEW --> PROMPT
-
-    style OLD fill:#f0f0f0,stroke:#bbb,color:#777
-    style KEEP fill:#e8f5e9,stroke:#66bb6a
-    style NEW fill:#fff3e0,stroke:#ffa726
+    OLD[Turns 1-8<br/>in MongoDB<br/>NOT replayed] -. forgotten .-> PROMPT
+    KEEP(Turns 9-12<br/>the window) --> PROMPT
+    NEW(Turn 13<br/>the new question) --> PROMPT[Prompt sent to the model]
 ```
 
 Nothing is ever deleted — turns 1–8 stay in the database and are still returned by
@@ -378,6 +353,8 @@ If the client closes the tab mid-answer, the partial text is still saved, flagge
 | **Soft delete** | Messages stay on disk; an accidental click is not permanent. |
 | **`X-Conversation-Id` response header** | The body is a raw token stream with nowhere to put metadata, and this keeps the existing response contract unchanged. |
 | **State lives only in MongoDB** | The app layer is stateless, so restarts and multiple workers are safe. |
+| **Voice uses raw PCM over a WebSocket, not WebRTC** | Push-to-talk on localhost has none of the problems WebRTC solves (echo, jitter, packet loss), and WebRTC hides the media path — the exact part worth teaching. See [voice-mode.md](voice-mode.md) §2. |
+| **LLM clients built once per process, not per request** | Constructing `ChatGroq` + `ChatGoogleGenerativeAI` costs ~1.2 s **every time**, not just the first. Doing it per request put that in front of every answer. See [voice-mode.md](voice-mode.md) §8. |
 
 ---
 
@@ -398,6 +375,7 @@ app/
 ├── ai/
 │   ├── router.py            # QueryRouter -> RouteDecision(route, standalone_question)
 │   ├── chat.py              # ChatService: 4 route branches, tool loop, persistence
+│   ├── voice.py             # STT (Groq Whisper), TTS (ElevenLabs WS), sentence chunker
 │   └── chain.py             # 3-stage LCEL chain: extract -> enrich -> format
 ├── rag/
 │   ├── rag_pipeline.py      # ingest() / retrieve()
@@ -407,6 +385,7 @@ app/
 ├── prompts/                 # router, RAG and per-route system prompts
 ├── routes/
 │   ├── chatbot.py           # POST /chatbot
+│   ├── voice.py             # WS /ws/voice  (push-to-talk turn loop)
 │   └── conversations.py     # conversation CRUD
 ├── schemas/
 │   └── chat.py              # Pydantic request/response models

@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import traceback
+from functools import lru_cache
 
 from langchain_groq import ChatGroq
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -21,6 +22,7 @@ from app.prompts.router_prompt import (
     BOTH_SYSTEM_PROMPT,
     DIRECT_SYSTEM_PROMPT,
 )
+from app.prompts.voice_prompt import VOICE_SYSTEM_PROMPT
 from app.core.config import settings
 from app.rag.rag_pipeline import rag_pipeline
 from app.ai.router import query_router
@@ -33,6 +35,69 @@ logger = logging.getLogger(__name__)
 # reference to a running task, so without this a fire-and-forget write can be
 # garbage collected mid-flight and silently never happen.
 _pending_writes: set[asyncio.Task] = set()
+
+
+@lru_cache(maxsize=4)
+def _build_models(max_tokens: int):
+    """The model trio for a given token budget, built once per process.
+
+    Constructing these is expensive and, crucially, *not* a one-off cold start:
+    measured here, ChatGoogleGenerativeAI takes ~740ms and ChatGroq ~490ms
+    EVERY time, so building them per request put a flat ~1.2s in front of every
+    answer — voice and text alike — before a single byte was sent to any API.
+
+    They are stateless HTTP clients, so one set per token budget is safe to
+    share across requests, the same way app/ai/router.py already keeps a
+    module-level singleton. Cached on max_tokens because that is the only thing
+    that varies (500 for text, ~120 for voice), which means two entries.
+    """
+    primary_llm = ChatGroq(
+        model="llama-3.1-8b-instant",
+        groq_api_key=settings.groq_api_key,
+        temperature=0.7,
+        max_tokens=max_tokens,
+    )
+
+    fallback_llm = ChatGoogleGenerativeAI(
+        model="gemini-2.5-flash",
+        google_api_key=settings.gemini_api_key,
+        temperature=0.7,
+        max_output_tokens=max_tokens,
+    )
+
+    llm_with_fallbacks = primary_llm.with_fallbacks([fallback_llm])
+
+    # Note the order: bind_tools() must be applied to each *model* first,
+    # because with_fallbacks() returns a RunnableWithFallbacks, which has no
+    # bind_tools() method of its own.
+    llm_with_tools = primary_llm.bind_tools([get_weather]).with_fallbacks(
+        [fallback_llm.bind_tools([get_weather])]
+    )
+
+    return llm_with_fallbacks, llm_with_tools
+
+
+def warm_up_models() -> None:
+    """Build both token-budget variants at startup rather than mid-request."""
+    for budget in (500, settings.voice_max_tokens):
+        _build_models(budget)
+
+
+async def warm_up_llm() -> None:
+    """Open the connection to Groq's chat endpoint before the first real turn.
+
+    Same reasoning as the STT warm-up in app/ai/voice.py, and measurably worth
+    it: the first turn of a fresh process saw first-audio at ~2.4s against
+    ~1.3s for every turn after, and the difference was almost entirely the
+    first chat/completions call paying for TLS setup.
+    """
+    try:
+        llm, _ = _build_models(settings.voice_max_tokens)
+        async for _ in llm.astream([HumanMessage(content="hi")]):
+            break  # one token is enough to establish the connection
+        logger.info("LLM connection warmed up")
+    except Exception as e:
+        logger.warning(f"LLM warm-up skipped: {e}")
 
 
 def content_to_text(content) -> str:
@@ -95,12 +160,25 @@ class ChatService:
         user_prompt: str,
         conversation_id: str,
         history: list[BaseMessage] | None = None,
+        voice_mode: bool = False,
     ):
         self.user_prompt = user_prompt
         self.conversation_id = conversation_id
+        self.voice_mode = voice_mode
 
         # The window buffer, already trimmed to the last k turns by the caller.
         self.history = list(history or [])
+
+        # Voice answers are spoken, so they need different shaping than text
+        # ones: a few sentences, no markdown, numbers written how they sound.
+        # Injecting it at the head of the history rather than editing each of
+        # the four branch generators means it applies to RAG, TOOL, BOTH and
+        # DIRECT alike, and lands directly after that branch's own system
+        # prompt. The cap is also a cost control — on the ElevenLabs free tier
+        # a 2000-character reply is a tenth of the month's credits.
+        if voice_mode:
+            self.history.insert(0, SystemMessage(content=VOICE_SYSTEM_PROMPT))
+        max_tokens = settings.voice_max_tokens if voice_mode else 500
 
         # Filled in once the router has run.
         self.route: str | None = None
@@ -115,31 +193,9 @@ class ChatService:
         self.gemini_key = settings.gemini_api_key
         self.groq_key   = settings.groq_api_key
 
-        # 1. Initialize official LangChain models directly
-        primary_llm = ChatGroq(
-            model="llama-3.1-8b-instant",
-            groq_api_key=self.groq_key,
-            temperature=0.7,
-            max_tokens=500
-        )
-
-        fallback_llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
-            google_api_key=self.gemini_key,
-            temperature=0.7,
-            max_output_tokens=500
-        )
-
-        # 2. Add automatic fallback model
-        self.llm_with_fallbacks = primary_llm.with_fallbacks([fallback_llm])
-
-        # 3. A tool-aware variant of the same pair.
-        #    Note the order: bind_tools() must be applied to each *model* first,
-        #    because with_fallbacks() returns a RunnableWithFallbacks, which has
-        #    no bind_tools() method of its own.
-        self.llm_with_tools = primary_llm.bind_tools([get_weather]).with_fallbacks(
-            [fallback_llm.bind_tools([get_weather])]
-        )
+        # Shared across requests — see _build_models for why this is not done
+        # inline here any more.
+        self.llm_with_fallbacks, self.llm_with_tools = _build_models(max_tokens)
 
     # ── Entry point ──────────────────────────────────────────────────────────
 

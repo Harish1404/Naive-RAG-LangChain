@@ -11,6 +11,7 @@ This system features dynamic query routing, hybrid vector & keyword retrieval fu
 Comprehensive technical documentation is available in the [`docs/`](file:///c:/Users/haris/Documents/Projects/Langchain-RAG/docs) directory:
 
 - 🏗️ **[System Architecture](docs/architecture.md)** — Complete component breakdown and system-wide Mermaid diagram.
+- 🎙️ **[Voice Mode](docs/voice-mode.md)** — The spoken path end to end: WebSocket + PCM transport, streaming TTS, the latency work, and free-tier limits.
 - 🔄 **[RAG & App Workflows](docs/workflow.md)** — Detailed sequence flows for startup ingestion, hybrid retrieval, tool execution, and streaming responses.
 - ✂️ **[Chunking Strategy](docs/chunking.md)** — Recursive text splitting, parameter choices, and incremental deduplication logic.
 - 🚀 **[Advanced RAG Concepts](docs/advanced-rag.md)** — Hybrid search, query expansion, re-ranking, and context compression.
@@ -48,7 +49,14 @@ Before executing any retrieval or LLM generation, an ultra-fast classification c
 ### 5. Multi-Modal & Specialized AI Modules
 - **3-Stage LCEL Chain (`app/ai/chain.py`)**: Concept extraction (JSON parser) → Concept enrichment → Markdown report generation.
 - **Image Generation (`app/ai/image.py`)**: Generates images using LiteLLM and Gemini Imagen 3 (`gemini/Gemini 2.5 Flash Preview Image`), returning PIL image instances.
-- **Voice Engine (`app/ai/voice.py`)**: Speech-to-Text via Groq Whisper Turbo (`whisper-large-v3-turbo`) and Text-to-Speech via `edge_tts` (`en-IN-PrabhatNeural`).
+- **Voice Engine (`app/ai/voice.py`)**: Speech-to-Text via Groq Whisper Turbo (`whisper-large-v3-turbo`) and streaming Text-to-Speech via the ElevenLabs `stream-input` WebSocket (`eleven_flash_v2_5`, `pcm_24000`).
+
+### 6. Real-Time Voice Mode
+Push-to-talk speech in, synthesised speech out, over a single WebSocket at **`/ws/voice`** — see **[docs/voice-mode.md](docs/voice-mode.md)**.
+- **Transport**: raw PCM16 both directions (16 kHz up, 24 kHz down). No WebRTC, no Opus, no ffmpeg — and **no new dependencies** on either side.
+- **Streaming TTS**: LLM tokens are regrouped at sentence boundaries and pushed into ElevenLabs while the model is still writing, so audio begins after the *first* sentence rather than the last.
+- **Shared brain**: the spoken path reuses the same `ChatService` — routing, retrieval, tools and memory all apply, with a voice-specific prompt for short spoken answers.
+- **Measured**: ~0.2 s to on-screen transcript, ~1.3–1.8 s median to the first spoken word.
 
 ---
 
@@ -62,7 +70,7 @@ Langchain-RAG/
 │   │   ├── chat.py           # Core ChatService, Router integration & Tool-calling loop
 │   │   ├── image.py          # Image generation via LiteLLM (Gemini Imagen 3)
 │   │   ├── router.py         # Lightweight QueryRouter classification chain
-│   │   └── voice.py          # Speech-to-Text (Whisper) & Text-to-Speech (EdgeTTS)
+│   │   └── voice.py          # STT (Groq Whisper), streaming TTS (ElevenLabs WS), sentence chunker
 │   ├── core/
 │   │   └── config.py         # Centralized Settings & environment variable configuration
 │   ├── db/
@@ -70,7 +78,8 @@ Langchain-RAG/
 │   ├── prompts/
 │   │   ├── chain_prompts.py  # Prompts for 3-stage chain pipeline
 │   │   ├── rag_prompt.py    # System prompts & context formatters for RAG
-│   │   └── router_prompt.py # System prompts for Router & route-specific models
+│   │   ├── router_prompt.py # System prompts for Router & route-specific models
+│   │   └── voice_prompt.py  # Spoken-answer shaping: 2-3 sentences, no markdown
 │   ├── rag/
 │   │   ├── data_processor.py # File loader (.pdf, .txt, .md) & RecursiveCharacterTextSplitter
 │   │   ├── embeddings.py     # Gemini GoogleGenerativeAIEmbeddings (768d)
@@ -83,6 +92,7 @@ Langchain-RAG/
 │   │   └── chat.py           # Pydantic request/response models
 │   ├── routes/
 │   │   ├── chatbot.py        # FastAPI APIRouter streaming endpoint (/chatbot)
+│   │   ├── voice.py          # WebSocket /ws/voice — push-to-talk turn loop
 │   │   └── conversations.py  # Conversation CRUD (new chat, list, transcript, rename, delete)
 │   └── main.py               # FastAPI app initialization, lifespan handler & health routes
 ├── docs/                     # Technical architecture, workflow, and RAG guides
@@ -111,6 +121,21 @@ DB_NAME=rag_db
 
 # External Tools & Webhooks
 WEATHER_WEBHOOK_URL=https://your-webhook-endpoint.com
+
+# Voice mode (ElevenLabs). Only ELEVEN_API is required; the rest have defaults.
+ELEVEN_API=your_elevenlabs_api_key
+# Free accounts CANNOT use library voices over the API. Verified working on free:
+#   Sarah EXAVITQu4vr4xnSDxMaL (default) | Adam pNInz6obpgDQGcFmaJgB
+#   Antoni ErXwobaYiN019PkySvjV | Arnold VR6AewLTigWG4xSOukaG
+#   George JBFqnCBsd6RMkjVDRZzb | Jessica cgSgspJ2msm6clMCkdW9
+#   Daniel onwK4e9ZLuTAKqWW03F9
+ELEVEN_VOICE_ID=EXAVITQu4vr4xnSDxMaL
+ELEVEN_MODEL_ID=eleven_flash_v2_5   # 0.5 credits/char and ~75ms to first byte
+ELEVEN_OUTPUT_FORMAT=pcm_24000      # pcm_44100 would require a Pro subscription
+MIC_SAMPLE_RATE=16000               # what the browser worklet sends
+TTS_SAMPLE_RATE=24000               # must match ELEVEN_OUTPUT_FORMAT
+VOICE_MAX_TOKENS=120                # short spoken answers; also a credit control
+TTS_CACHE_ENABLED=true              # replay identical phrases free while developing
 
 # LangSmith Tracing (optional — tracing is off unless LANGSMITH_TRACING=true)
 LANGSMITH_TRACING=true
@@ -181,6 +206,21 @@ Streams the answer back as plain text tokens.
        -H "Content-Type: application/json" \
        -d '{"conversation_id": "conv_...", "user_prompt": "what are his skills?"}'
   ```
+
+### `WS /ws/voice`
+Push-to-talk voice turns. Binary frames are always audio, text frames are always JSON.
+Full protocol table and rationale in **[docs/voice-mode.md](docs/voice-mode.md)** §3.
+
+| Direction | Frame | Meaning |
+|---|---|---|
+| → server | binary | PCM16LE, 16 kHz, mono, ~40 ms per frame |
+| → server | `{"type":"start","conversation_id":…}` | button pressed |
+| → server | `{"type":"end"}` \| `{"type":"cancel"}` | run the turn \| discard it |
+| ← client | `{"type":"transcript"\|"token"\|"done"\|"error", …}` | control + captions |
+| ← client | binary | PCM16LE, 24 kHz, mono — synthesised speech |
+
+> The `Origin` header is checked inside the endpoint against an allowlist, because
+> `CORSMiddleware` does **not** apply to WebSocket handshakes.
 
 ### Conversation management
 

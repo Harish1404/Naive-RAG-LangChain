@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -6,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.routes.chatbot import router as chatbot_router
 from app.routes.conversations import router as conversations_router
+from app.routes.voice import router as voice_router
 from app.rag.rag_pipeline import rag_pipeline
 from app.core.tracing import verify_langsmith_connection
 from app.db.mongodb import (
@@ -15,6 +17,8 @@ from app.db.mongodb import (
     ensure_chat_indexes,
 )
 from app.tools.weather import close_client as close_weather_client
+from app.ai.voice import warm_up as warm_up_stt, remaining_credits
+from app.ai.chat import warm_up_models, warm_up_llm
 
 
 # Configure logging to output INFO level logs to terminal
@@ -38,6 +42,17 @@ async def lifespan(app: FastAPI):
     await ensure_chat_indexes()
     chunk_count = await rag_pipeline.ingest("uploads")
     logger.info(f"RAG startup ingestion complete: {chunk_count} new chunk(s) indexed.")
+
+    # The first Groq transcription of a process pays ~1s of connection setup
+    # that every later one does not. Spending it here means the first person to
+    # press the mic button gets the same latency as everyone after them.
+    warm_up_models()
+    await asyncio.gather(warm_up_stt(), warm_up_llm())
+
+    credits = await remaining_credits()
+    if credits is not None:
+        logger.info(f"ElevenLabs credits remaining this month: {credits}")
+
     yield
     logger.info("App shutdown")
 
@@ -71,6 +86,7 @@ app.add_middleware(
 
 app.include_router(chatbot_router)
 app.include_router(conversations_router)
+app.include_router(voice_router)
 
 
 
