@@ -65,7 +65,7 @@ class ConversationStore:
 
     async def create_conversation(
         self,
-        user_id: str = "default_user",
+        user_id: str,
         title: Optional[str] = None,
     ) -> dict:
         now = _now()
@@ -86,17 +86,28 @@ class ConversationStore:
     async def get_conversation(
         self,
         conversation_id: str,
-        user_id: Optional[str] = None,
+        user_id: str,
     ) -> Optional[dict]:
-        """Returns None for a missing or soft-deleted conversation."""
-        query: dict = {"_id": conversation_id, "deleted": {"$ne": True}}
-        if user_id:
-            query["user_id"] = user_id
-        return await self.conversations.find_one(query)
+        """
+        Returns None for a missing, soft-deleted, or someone else's conversation.
+
+        `user_id` is required, and that is the fix for a real hole: it used to
+        be optional, and the query skipped the owner clause whenever it was
+        falsy. Every caller that omitted it — which was every /conversations/{id}
+        route — could therefore read any thread by id. Making the argument
+        mandatory means the filter cannot be forgotten again.
+
+        Not-yours is reported as None, so the route answers 404 rather than 403
+        and the API does not confirm that an id exists to someone who cannot
+        see it.
+        """
+        return await self.conversations.find_one(
+            {"_id": conversation_id, "user_id": user_id, "deleted": {"$ne": True}}
+        )
 
     async def list_conversations(
         self,
-        user_id: str = "default_user",
+        user_id: str,
         limit: int = 50,
         skip: int = 0,
     ) -> list[dict]:
@@ -110,20 +121,28 @@ class ConversationStore:
         )
         return await cursor.to_list(length=limit)
 
-    async def rename_conversation(self, conversation_id: str, title: str) -> Optional[dict]:
+    async def rename_conversation(
+        self, conversation_id: str, title: str, user_id: str
+    ) -> Optional[dict]:
+        """
+        The owner clause is repeated here rather than left to the route's
+        earlier existence check. Re-checking inside the write closes the gap
+        between "we looked it up" and "we changed it", and means a future
+        caller cannot reach this method without an owner.
+        """
         return await self.conversations.find_one_and_update(
-            {"_id": conversation_id, "deleted": {"$ne": True}},
+            {"_id": conversation_id, "user_id": user_id, "deleted": {"$ne": True}},
             {"$set": {"title": title, "updated_at": _now()}},
             return_document=ReturnDocument.AFTER,
         )
 
-    async def delete_conversation(self, conversation_id: str) -> bool:
+    async def delete_conversation(self, conversation_id: str, user_id: str) -> bool:
         """
         Soft delete. The messages stay on disk, so a thread can be restored and
         so an accidental click is not a permanent loss.
         """
         result = await self.conversations.update_one(
-            {"_id": conversation_id, "deleted": {"$ne": True}},
+            {"_id": conversation_id, "user_id": user_id, "deleted": {"$ne": True}},
             {"$set": {"deleted": True, "updated_at": _now()}},
         )
         return result.modified_count > 0

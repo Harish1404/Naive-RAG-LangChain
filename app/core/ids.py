@@ -15,6 +15,10 @@ from uuid import UUID, uuid4
 
 CONVERSATION_PREFIX = "conv"
 MESSAGE_PREFIX = "msg"
+USER_PREFIX = "usr"
+PROFILE_PREFIX = "prf"
+SESSION_PREFIX = "sess"
+FAMILY_PREFIX = "fam"
 
 
 def new_conversation_id() -> str:
@@ -23,6 +27,30 @@ def new_conversation_id() -> str:
 
 def new_message_id() -> str:
     return f"{MESSAGE_PREFIX}_{uuid4()}"
+
+
+def new_user_id() -> str:
+    """
+    The app's own identity for a person, minted on first sign-in.
+
+    Deliberately not the Clerk id. Everything downstream — conversations,
+    messages, refresh tokens — keys off this, so swapping identity providers
+    later would not require rewriting every owning document.
+    """
+    return f"{USER_PREFIX}_{uuid4()}"
+
+
+def new_profile_id() -> str:
+    return f"{PROFILE_PREFIX}_{uuid4()}"
+
+
+def new_session_id() -> str:
+    return f"{SESSION_PREFIX}_{uuid4()}"
+
+
+def new_family_id() -> str:
+    """Groups every refresh token descended from one login, for reuse detection."""
+    return f"{FAMILY_PREFIX}_{uuid4()}"
 
 
 def is_valid_id(value: str, prefix: str) -> bool:
@@ -49,3 +77,7 @@ def is_valid_id(value: str, prefix: str) -> bool:
 
 def is_conversation_id(value: str) -> bool:
     return is_valid_id(value, CONVERSATION_PREFIX)
+
+
+def is_user_id(value: str) -> bool:
+    return is_valid_id(value, USER_PREFIX)

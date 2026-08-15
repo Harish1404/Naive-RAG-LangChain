@@ -2,7 +2,7 @@
 
 A production-grade, asynchronous Retrieval-Augmented Generation (RAG) and multi-modal AI backend built with **FastAPI**, **LangChain**, and **MongoDB Atlas**.
 
-This system features dynamic query routing, hybrid vector & keyword retrieval fused via **Reciprocal Rank Fusion (RRF)**, automatic fallback across dual LLM providers (**Groq Llama 3.1 8B** + **Google Gemini 2.5 Flash**), tool calling with external webhooks, 3-stage LCEL document transformation chains, and multi-modal capabilities (voice STT/TTS & image generation).
+This system features dynamic query routing, hybrid vector & keyword retrieval fused via **Reciprocal Rank Fusion (RRF)**, automatic fallback across dual LLM providers (**Groq Llama 3.1 8B** + **Google Gemini 2.5 Flash**), tool calling with external webhooks, 3-stage LCEL document transformation chains, multi-modal capabilities (voice STT/TTS & image generation), and **Clerk-backed authentication with rotating server-issued sessions**.
 
 ---
 
@@ -10,7 +10,7 @@ This system features dynamic query routing, hybrid vector & keyword retrieval fu
 
 Comprehensive technical documentation is available in the [`docs/`](file:///c:/Users/haris/Documents/Projects/Langchain-RAG/docs) directory:
 
-- 🏗️ **[System Architecture](docs/architecture.md)** — Complete component breakdown and system-wide Mermaid diagram.
+- 🏗️ **[System Architecture](docs/architecture.md)** — Complete component breakdown and system-wide Mermaid diagram. **§12 covers authentication**: the Clerk/session split, token rotation, and the ownership model.
 - 🎙️ **[Voice Mode](docs/voice-mode.md)** — The spoken path end to end: WebSocket + PCM transport, streaming TTS, the latency work, and free-tier limits.
 - 🔄 **[RAG & App Workflows](docs/workflow.md)** — Detailed sequence flows for startup ingestion, hybrid retrieval, tool execution, and streaming responses.
 - ✂️ **[Chunking Strategy](docs/chunking.md)** — Recursive text splitting, parameter choices, and incremental deduplication logic.
@@ -51,7 +51,15 @@ Before executing any retrieval or LLM generation, an ultra-fast classification c
 - **Image Generation (`app/ai/image.py`)**: Generates images using LiteLLM and Gemini Imagen 3 (`gemini/Gemini 2.5 Flash Preview Image`), returning PIL image instances.
 - **Voice Engine (`app/ai/voice.py`)**: Speech-to-Text via Groq Whisper Turbo (`whisper-large-v3-turbo`) and streaming Text-to-Speech via the ElevenLabs `stream-input` WebSocket (`eleven_flash_v2_5`, `pcm_24000`).
 
-### 6. Real-Time Voice Mode
+### 6. Authentication & Per-User Isolation
+Clerk handles identity; this backend owns the session and every authorization decision — see **[docs/architecture.md](docs/architecture.md) §12**.
+- **Split of responsibility**: Clerk runs sign-in/OAuth, the backend issues its own `HttpOnly` cookies so it can enforce `is_banned` with no third-party round trip on the streaming path — and so `/ws/voice` has a credential at all, since the browser `WebSocket` API cannot set headers.
+- **Rotating refresh tokens**: single-use, stored only as a SHA-256 hash, grouped by `family_id`. Presenting a spent token revokes the whole family, on the assumption it may have been stolen.
+- **Fast ban propagation**: a `token_version` claim is checked against the user record, so a ban invalidates live access tokens immediately rather than after their 15-minute TTL.
+- **Clerk webhooks** (`POST /webhooks/clerk`, Svix-signed) keep the two systems in sync — without them a user revoked in Clerk would keep a working session here.
+- **Ownership enforced in the data layer**: `user_id` is a required argument on every conversation query, and is resolved from the cookie — the request body carries no identity at all.
+
+### 7. Real-Time Voice Mode
 Push-to-talk speech in, synthesised speech out, over a single WebSocket at **`/ws/voice`** — see **[docs/voice-mode.md](docs/voice-mode.md)**.
 - **Transport**: raw PCM16 both directions (16 kHz up, 24 kHz down). No WebRTC, no Opus, no ffmpeg — and **no new dependencies** on either side.
 - **Streaming TTS**: LLM tokens are regrouped at sentence boundaries and pushed into ElevenLabs while the model is still writing, so audio begins after the *first* sentence rather than the last.
@@ -71,8 +79,19 @@ Langchain-RAG/
 │   │   ├── image.py          # Image generation via LiteLLM (Gemini Imagen 3)
 │   │   ├── router.py         # Lightweight QueryRouter classification chain
 │   │   └── voice.py          # STT (Groq Whisper), streaming TTS (ElevenLabs WS), sentence chunker
+│   ├── api/
+│   │   └── deps.py           # Auth dependencies: get_current_user, require_verified/admin, WS variant
 │   ├── core/
-│   │   └── config.py         # Centralized Settings & environment variable configuration
+│   │   ├── config.py         # Centralized Settings & environment variable configuration
+│   │   ├── ids.py            # Prefixed UUID generation & validation (conv_/msg_/usr_/prf_)
+│   │   └── security.py       # Access-token signing, refresh hashing, cookie policy
+│   ├── repositories/         # Mongo-only data access for auth (no policy)
+│   │   ├── user_repo.py      # users: Clerk upsert, ban, token_version
+│   │   ├── profile_repo.py   # profiles: editable-field allowlist
+│   │   └── session_repo.py   # refresh tokens: rotation, reuse detection, revocation
+│   ├── services/             # Policy & orchestration
+│   │   ├── auth_service.py   # establish / refresh / logout / me
+│   │   └── clerk_service.py  # Clerk token verification, user lookup, OAuth token read
 │   ├── db/
 │   │   └── mongodb.py        # Motor async MongoDB client & connection lifecycle
 │   ├── prompts/
@@ -89,8 +108,11 @@ Langchain-RAG/
 │   │   ├── store.py          # MongoDB persistence for conversations & messages
 │   │   └── window.py         # Window buffer: last k turns -> LangChain messages
 │   ├── schemas/
-│   │   └── chat.py           # Pydantic request/response models
+│   │   ├── chat.py           # Pydantic request/response models (no user_id — see docs §12.7)
+│   │   └── auth.py           # Profile update + user/profile output models
 │   ├── routes/
+│   │   ├── auth.py           # /auth/session, /refresh, /logout, /me, /me/profile
+│   │   ├── webhooks.py       # POST /webhooks/clerk — Svix-signed, machine-to-machine
 │   │   ├── chatbot.py        # FastAPI APIRouter streaming endpoint (/chatbot)
 │   │   ├── voice.py          # WebSocket /ws/voice — push-to-talk turn loop
 │   │   └── conversations.py  # Conversation CRUD (new chat, list, transcript, rename, delete)
@@ -121,6 +143,22 @@ DB_NAME=rag_db
 
 # External Tools & Webhooks
 WEATHER_WEBHOOK_URL=https://your-webhook-endpoint.com
+
+# Authentication — Clerk identity + backend-issued sessions (see docs/architecture.md §12)
+CLERK_SECRET_KEY=sk_test_...
+CLERK_PUBLISHABLE_KEY=pk_test_...
+# The Svix SIGNING SECRET from the Clerk dashboard webhook page — not a URL.
+CLERK_WEBHOOK_SECRET=whsec_...
+# Must be high entropy: HS256 signed with a short human-typed string can be
+# brute-forced offline from any single issued token.
+#   python -c "import secrets; print(secrets.token_hex(32))"
+JWT_SECRET=<64 hex chars>
+JWT_ALGORITHM=HS256
+ACCESS_TOKEN_TTL_MIN=15        # also the worst-case delay before a ban bites
+REFRESH_TOKEN_TTL_DAYS=7
+COOKIE_SECURE=false            # true in production (required for SameSite=none)
+COOKIE_SAMESITE=lax            # "none" if frontend and backend are on different domains
+COOKIE_DOMAIN=
 
 # Voice mode (ElevenLabs). Only ELEVEN_API is required; the rest have defaults.
 ELEVEN_API=your_elevenlabs_api_key
@@ -182,13 +220,39 @@ LARGE_HISTORY_THRESHOLD=100   # turn count at which the wider window kicks in
 
 ## 📡 API Endpoint Reference
 
+> **Every endpoint below except `/health`, `/` and `/webhooks/clerk` requires a session.**
+> Identity comes from the `access_token` cookie; a bearer header is also accepted so
+> `curl` and `/docs` stay usable. Unauthenticated requests get `401`, banned users `403`.
+> No request body carries a `user_id` — see [docs/architecture.md](docs/architecture.md) §12.7.
+
+### Authentication
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `POST` | `/auth/session` | Clerk bearer token | Exchange a Clerk token for session cookies. Called once after sign-in. |
+| `POST` | `/auth/refresh` | Refresh cookie | Rotate the pair. The only path the refresh cookie is scoped to. |
+| `POST` | `/auth/logout` | none | Revoke + clear cookies. Unauthenticated so an expired session can still sign out. |
+| `POST` | `/auth/logout-all` | session | End every session on every device. |
+| `GET` | `/auth/me` | session | Current user + profile. |
+| `PATCH` | `/auth/me/profile` | session | Update `username`, `avatar_url`, `mobile`, `address`, `bio`. |
+| `POST` | `/webhooks/clerk` | Svix signature | Keeps Clerk and the local session store in sync. |
+
+```bash
+# Establish a session (the frontend does this automatically after Clerk sign-in)
+curl -X POST "http://127.0.0.1:8000/auth/session" \
+     -H "Authorization: Bearer <clerk_session_token>" -c cookies.txt
+
+curl "http://127.0.0.1:8000/auth/me" -b cookies.txt
+```
+
 ### `POST /chatbot`
-Streams the answer back as plain text tokens.
+Streams the answer back as plain text tokens. **Requires a session.**
 
 - **JSON Body**:
   - `user_prompt` (`str`, required): The question or command for the assistant.
   - `conversation_id` (`str`, optional): Continue an existing thread. Omit it to start a new one.
-  - `user_id` (`str`, optional): Defaults to `"default_user"`.
+  - There is deliberately **no `user_id`** — the owner is taken from the session cookie, and
+    a `user_id` in the body is ignored. Continuing a thread you do not own returns `404`.
 
 - **Response Header**:
   - `X-Conversation-Id`: The thread this message landed in — read it on the first
@@ -197,12 +261,12 @@ Streams the answer back as plain text tokens.
 - **Example Request**:
   ```bash
   # New chat (id comes back in the header)
-  curl -N -D - -X POST "http://127.0.0.1:8000/chatbot" \
+  curl -N -D - -X POST "http://127.0.0.1:8000/chatbot" -b cookies.txt \
        -H "Content-Type: application/json" \
        -d '{"user_prompt": "Who is Harish?"}'
 
   # Continue that chat — follow-ups can rely on the previous turns
-  curl -N -X POST "http://127.0.0.1:8000/chatbot" \
+  curl -N -X POST "http://127.0.0.1:8000/chatbot" -b cookies.txt \
        -H "Content-Type: application/json" \
        -d '{"conversation_id": "conv_...", "user_prompt": "what are his skills?"}'
   ```
@@ -220,14 +284,20 @@ Full protocol table and rationale in **[docs/voice-mode.md](docs/voice-mode.md)*
 | ← client | binary | PCM16LE, 24 kHz, mono — synthesised speech |
 
 > The `Origin` header is checked inside the endpoint against an allowlist, because
-> `CORSMiddleware` does **not** apply to WebSocket handshakes.
+> `CORSMiddleware` does **not** apply to WebSocket handshakes. That proves where the page
+> came from, not who is using it — authentication is a separate check against the session
+> cookie, which the browser attaches to the handshake automatically. An unauthenticated
+> socket is closed with code `1008`.
 
 ### Conversation management
+
+All scoped to the caller. Another user's thread returns **`404`, not `403`** — the API
+never confirms an id exists to someone who cannot see it.
 
 | Method | Path | Purpose |
 |---|---|---|
 | `POST` | `/conversations` | Start a new chat explicitly |
-| `GET` | `/conversations?user_id=&limit=&skip=` | List threads, most recently active first |
+| `GET` | `/conversations?limit=&skip=` | List **your** threads, most recently active first |
 | `GET` | `/conversations/{id}?limit=&before_seq=` | Full transcript, oldest message first |
 | `PATCH` | `/conversations/{id}` | Rename (`{"title": "..."}`) |
 | `DELETE` | `/conversations/{id}` | Soft delete |

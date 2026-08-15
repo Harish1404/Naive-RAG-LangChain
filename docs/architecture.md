@@ -5,6 +5,10 @@
 > decisions and the reasoning behind each one — that section is the most useful if
 > you are learning from this codebase rather than working on it.
 >
+> **§12 covers authentication.** It is a gate in front of everything in §3–§8: no
+> request reaches `ChatService` without an authenticated user, and every stored
+> document is owned by one. Read it before changing anything that touches `user_id`.
+>
 > The spoken path — microphone in, synthesised speech out — has its own walkthrough in
 > [voice-mode.md](voice-mode.md).
 
@@ -16,27 +20,39 @@ A **retrieval-augmented chatbot with persistent conversation memory**. A user as
 question; the system decides *how* to answer it (search a document, call a tool, both,
 or neither), remembers what was said before, and streams the answer back token by token.
 
-Three ideas do most of the work:
+Four ideas do most of the work:
 
 | Idea | In one line |
 |---|---|
 | **Routing** | Not every question needs a database search. Decide first, then do only that work. |
 | **Retrieval** | Answers about the resume come from the resume, not from the model's memory of the internet. |
 | **Memory** | The last few exchanges are replayed to the model, so follow-up questions make sense. |
+| **Identity** | Every thread belongs to someone. Who that is comes from a signed cookie, never from the request body. |
 
 ---
 
 ## 2. The map
 
 Two ways in — a streaming HTTP endpoint for typed questions and a WebSocket for spoken
-ones — converging on the same `ChatService`. Everything above the database is stateless;
-all state lives in MongoDB, so restarting the server loses nothing.
+ones — converging on the same `ChatService`, both behind the same auth gate. Everything
+above the database is stateless; all state lives in MongoDB, so restarting the server
+loses nothing.
 
 ```mermaid
 graph TD
-    UI[Client<br/>holds a conversation_id] --> CHATEP(POST /chatbot<br/>routes/chatbot.py)
-    UI --> VOICEEP(WS /ws/voice<br/>routes/voice.py)
-    UI --> CONVEP(/conversations CRUD<br/>routes/conversations.py)
+    CLERK[[Clerk<br/>identity provider]] -.sign-in.-> UI
+    CLERK -.webhooks.-> WH(POST /webhooks/clerk<br/>routes/webhooks.py)
+
+    UI[Client<br/>session cookie + conversation_id] --> GATE
+    GATE{{get_current_user<br/>api/deps.py}} --> CHATEP(POST /chatbot<br/>routes/chatbot.py)
+    GATE --> VOICEEP(WS /ws/voice<br/>routes/voice.py)
+    GATE --> CONVEP(/conversations CRUD<br/>routes/conversations.py)
+    GATE --> AUTHEP(/auth/me, /auth/refresh<br/>routes/auth.py)
+
+    AUTHEP --> AUTHSVC(AuthService<br/>services/auth_service.py)
+    WH --> AUTHSVC
+    AUTHSVC --> REPOS(repositories/<br/>user, profile, session)
+    REPOS --> DB
 
     VOICEEP --> STT(Groq Whisper<br/>ai/voice.py)
     STT --> SERVICE
@@ -67,11 +83,17 @@ types, no LLM calls. `window.py` knows about LangChain messages but not about qu
 collections. That split means you can change how memory is *assembled* without touching
 how it is *stored*, and vice versa.
 
+The auth side repeats the pattern one layer deeper: `repositories/` know only Mongo,
+`services/` hold the policy, and `api/deps.py` is the only place a route learns who is
+calling. A route never queries a user collection directly.
+
 ---
 
 ## 3. The database
 
-Three collections in `rag_db`. The first is the knowledge base; the other two are the chat.
+Six collections in `rag_db`: the knowledge base, two for the chat, and three for auth
+(documented in §12). `mongodb.py` also exposes a `connector` accessor, but nothing writes
+to it yet — it is a placeholder for the MCP work, not a live collection.
 
 ### `vector_documents` — the knowledge base
 Chunks of the ingested documents, each with a 768-dimensional embedding. Written once at
@@ -82,7 +104,7 @@ startup, read on every RAG query. See [workflow.md](workflow.md) §1.
 ```jsonc
 {
   "_id": "conv_9f8b2c1e-4a77-4d1e-9c33-6b0f5d2a1e88",
-  "user_id": "default_user",
+  "user_id": "usr_1827a0e5-8130-4919-9e58-761999246e75",  // -> users._id
   "title": "Who is Harish",          // auto-derived from the first user message
   "message_count": 6,                 // doubles as the sequence allocator
   "last_message_preview": "He works at ...",
@@ -111,9 +133,16 @@ startup, read on every RAG query. See [workflow.md](workflow.md) §1.
 - `messages`: `(conversation_id, seq)` — **unique**
 - `conversations`: `(user_id, updated_at desc)` — powers the sidebar
 
+Auth indexes are listed in §12.
+
 > **Teaching note — the unique index is not just for speed.** It is the last line of
 > defence against two concurrent requests in the same thread being handed the same `seq`.
 > The database refuses the duplicate rather than silently interleaving the conversation.
+
+> **`user_id` is never taken from the request.** Every read and write above is filtered
+> by the id resolved from the session cookie. An earlier version accepted `user_id` as a
+> field on `ChatRequest`, which meant the caller declared their own identity — see §12
+> for what that allowed and how it was closed.
 
 ---
 
@@ -355,6 +384,11 @@ If the client closes the tab mid-answer, the partial text is still saved, flagge
 | **State lives only in MongoDB** | The app layer is stateless, so restarts and multiple workers are safe. |
 | **Voice uses raw PCM over a WebSocket, not WebRTC** | Push-to-talk on localhost has none of the problems WebRTC solves (echo, jitter, packet loss), and WebRTC hides the media path — the exact part worth teaching. See [voice-mode.md](voice-mode.md) §2. |
 | **LLM clients built once per process, not per request** | Constructing `ChatGroq` + `ChatGoogleGenerativeAI` costs ~1.2 s **every time**, not just the first. Doing it per request put that in front of every answer. See [voice-mode.md](voice-mode.md) §8. |
+| **Clerk for identity, this backend for sessions** | Clerk runs sign-in and OAuth so none of that is hand-rolled; the backend still issues its own cookies so it can enforce `is_banned` with no third-party round trip on the chat hot path — and so `/ws/voice` has a credential at all, since the browser `WebSocket` API cannot set headers. See §12. |
+| **`user_id` deleted from request schemas, not defaulted** | It used to be a field on `ChatRequest` defaulting to `"default_user"`. Making it *dynamic* would not have helped: as long as the client sends it, the client chooses who to be. Removing the field is what makes spoofing impossible. |
+| **Refresh tokens hashed with SHA-256, not bcrypt** | bcrypt is deliberately slow to resist brute force against *low-entropy human passwords*. A refresh token is 256 bits from `secrets.token_urlsafe(32)` — not guessable at any hash speed — so bcrypt would add ~100 ms to a hot endpoint and buy nothing. |
+| **Refresh tokens rotate, and reuse burns the family** | A token presented twice is either a retry or a theft, and the server cannot tell which. Revoking the whole chain is the only response that is safe in the theft case. |
+| **Clerk webhooks are mandatory, not optional** | Two session authorities drift. Without the webhook, a user revoked or deleted in Clerk keeps a working session here until their refresh token expires. |
 
 ---
 
@@ -364,9 +398,19 @@ If the client closes the tab mid-answer, the partial text is still saved, flagge
 app/
 ├── main.py                  # FastAPI app, lifespan (LangSmith -> Mongo -> indexes -> ingest), CORS
 ├── core/
-│   ├── config.py            # env settings, incl. the memory window knobs
-│   ├── ids.py               # conv_/msg_ UUID generation + validation
+│   ├── config.py            # env settings: memory window knobs, Clerk keys, cookie policy
+│   ├── ids.py               # conv_/msg_/usr_/prf_ UUID generation + validation
+│   ├── security.py          # access-token signing, refresh hashing, cookie set/clear
 │   └── tracing.py           # LangSmith helpers
+├── api/
+│   └── deps.py              # get_current_user / require_verified / require_admin / _ws
+├── repositories/            # Mongo only, no policy
+│   ├── user_repo.py         # users: upsert from Clerk, ban, token_version
+│   ├── profile_repo.py      # profiles: editable-field allowlist
+│   └── session_repo.py      # refresh tokens: rotation, reuse detection, revocation
+├── services/                # policy and orchestration
+│   ├── auth_service.py      # establish / refresh / logout / me
+│   └── clerk_service.py     # token verification, user lookup, OAuth token read
 ├── db/
 │   └── mongodb.py           # Motor client, collection accessors, index creation
 ├── memory/
@@ -384,11 +428,14 @@ app/
 │   └── data_processor.py    # loaders + RecursiveCharacterTextSplitter
 ├── prompts/                 # router, RAG and per-route system prompts
 ├── routes/
+│   ├── auth.py              # /auth/session, /refresh, /logout, /me, /me/profile
+│   ├── webhooks.py          # POST /webhooks/clerk  (Svix-signed, not user-authenticated)
 │   ├── chatbot.py           # POST /chatbot
 │   ├── voice.py             # WS /ws/voice  (push-to-talk turn loop)
 │   └── conversations.py     # conversation CRUD
 ├── schemas/
-│   └── chat.py              # Pydantic request/response models
+│   ├── chat.py              # Pydantic request/response models
+│   └── auth.py              # profile update + user/profile output models
 └── tools/
     └── weather.py           # @tool get_weather
 ```
@@ -407,3 +454,231 @@ one thread in the dashboard rather than a pile of unrelated runs. Each run also 
 
 Tracing is optional and never load-bearing: it is enabled by `LANGSMITH_TRACING=true`, and
 a LangSmith outage cannot break a chat request.
+
+---
+
+## 12. Authentication and sessions
+
+### 12.1 Two systems, one job each
+
+The setup uses Clerk *and* a session layer of its own. That is a deliberate split, not
+redundancy:
+
+| | Owns | Answers |
+|---|---|---|
+| **Clerk** | Identity | *Who is this person?* Runs sign-in, sign-up and OAuth. |
+| **This backend** | Sessions | *May they act right now?* Issues cookies, enforces `is_banned` / `is_verified`. |
+| **Clerk webhooks** | Sync | Keeps the two from drifting apart. |
+
+Three reasons the local session layer earns its place rather than just forwarding Clerk
+tokens on every call:
+
+1. **`/ws/voice` needs it.** The browser `WebSocket` API cannot set an `Authorization`
+   header. Cookies ride the handshake automatically. The alternative is a token in the
+   query string, which lands in every access log.
+2. **Ban checks stay local**, so no third-party round trip sits on the streaming path.
+3. **Clerk is called once per sign-in**, not once per request.
+
+> **The third row is not optional.** Two session authorities drift: revoke a user in
+> Clerk and, with no webhook, their session here keeps working until the refresh token
+> expires. `routes/webhooks.py` is what closes that, and building the session store
+> without it is the failure mode of this design.
+
+### 12.2 The flow
+
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant C as Clerk
+    participant A as FastAPI
+
+    B->>C: sign in (OAuth / password)
+    C-->>B: Clerk session token
+    B->>A: POST /auth/session  (Bearer <clerk token>)
+    A->>C: verify_token (azp pinned to our origins)
+    A->>A: upsert users + profiles, check is_banned
+    A-->>B: Set-Cookie access (15m, /) + refresh (7d, /auth/refresh)
+    Note over B,A: every later call, including WS, rides the cookies
+    B->>A: GET /conversations   (cookie)
+    A-->>B: only this user's threads
+    B->>A: POST /auth/refresh   (on 401)
+    A-->>B: rotated pair, or 401 + cleared cookies
+```
+
+The Clerk token is sent **exactly once**, at step 3. Everything after is cookie-based.
+
+### 12.3 The two credentials
+
+| | Access token | Refresh token |
+|---|---|---|
+| Form | Signed JWT | 256 random bits, opaque |
+| Lifetime | `ACCESS_TOKEN_TTL_MIN` (15m) | `REFRESH_TOKEN_TTL_DAYS` (7d) |
+| Stored | Not stored | SHA-256 hash only |
+| Cookie path | `/` | **`/auth/refresh`** |
+| Verified by | Signature, no DB read | Indexed hash lookup |
+
+Both are `HttpOnly`, so no script on the page can read either — the reason this is not a
+JWT in `localStorage`.
+
+**Why the refresh cookie is path-scoped.** A cookie is only sent to paths it is scoped to,
+so the long-lived credential is simply absent from every ordinary API call. It travels on
+one endpoint instead of all of them.
+
+**Why the access token is short.** It is verified without touching the database, so its
+lifetime is also the worst case delay before a ban bites. The `ver` claim closes even
+that: it is compared against the user's `token_version`, which a ban increments, so
+existing tokens stop verifying immediately.
+
+### 12.4 Rotation and theft detection
+
+Refresh tokens are single-use. Each rotation marks the old document `replaced_by` and
+issues a successor carrying the same `family_id`.
+
+If an already-spent token is presented again, one of two things happened: the legitimate
+holder retried, or someone stole it and the real holder already spent it. **The server
+cannot distinguish these**, so it takes the only action that is safe in the theft case —
+revoke the entire family and force a fresh sign-in.
+
+The consume step is a conditional update (`replaced_by: None` in the filter), so the check
+and the write are one atomic operation. Under eight concurrent rotations of the same
+token, exactly one wins; a read-then-write would let several through.
+
+> **Client consequence.** A page load fires several requests at once, so an expired token
+> produces a burst of 401s. If each retried independently, the second would present an
+> already-spent token and get the whole family burned — logging the user out for loading a
+> busy page. `src/lib/api.ts` holds one in-flight refresh promise so the burst produces a
+> single rotation.
+
+### 12.5 Collections
+
+```jsonc
+// users — authorization state, written only by auth decisions
+{
+  "_id": "usr_...", "clerk_user_id": "user_2ab...", "email": "a@b.com",
+  "email_verified": true,
+  "is_verified": true,          // the app's own gate, separate from Clerk's
+  "is_banned": false, "ban_reason": null, "banned_at": null,
+  "role": "user",               // or "admin"
+  "token_version": 0,           // bumped to invalidate live access tokens
+  "created_at": "...", "updated_at": "...", "last_login_at": "..."
+}
+
+// profiles — user-editable, 1:1 with users
+{
+  "_id": "prf_...", "user_id": "usr_...",
+  "username": "harish",         // from the OAuth provider on first sign-in
+  "email": "a@b.com",
+  "avatar_url": "", "mobile": "", "address": "", "bio": "",   // empty until edited
+  "created_at": "...", "updated_at": "..."
+}
+
+// refresh_tokens — one per issued token
+{
+  "_id": "sess_...", "user_id": "usr_...",
+  "token_hash": "<sha256>",     // the raw value is never stored
+  "family_id": "fam_...",       // shared by every descendant of one login
+  "issued_at": "...", "expires_at": "...",
+  "revoked_at": null,
+  "replaced_by": "<sha256>",    // non-null + presented again == reuse
+  "user_agent": "...", "ip": "..."
+}
+```
+
+**Indexes** — `users.clerk_user_id` unique, `users.email` unique, `profiles.user_id`
+unique, `refresh_tokens.token_hash` unique, `(user_id, family_id)`, and a **TTL** on
+`expires_at`.
+
+The unique indexes do real work: they make first sign-in an upsert rather than a
+read-then-write race, so two simultaneous first requests cannot create two accounts. The
+TTL reaps only *expired* rows — revoked-but-unexpired tokens stay, which is exactly what
+reuse detection needs in order to recognise a stolen token when it comes back.
+
+**Why `users` and `profiles` are separate.** `profiles` is written by the person it
+describes; `users` is written only by authorization decisions. Splitting them means a
+profile update physically cannot reach `role` or `is_banned`. Two gates enforce it: the
+Pydantic model in `schemas/auth.py` has no such fields, and `EDITABLE_FIELDS` in
+`profile_repo.py` drops anything outside the allowlist.
+
+### 12.6 Endpoints
+
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `POST /auth/session` | Clerk bearer | Exchange a Clerk token for cookies. Called once after sign-in. |
+| `POST /auth/refresh` | Refresh cookie | Rotate. The only path that cookie is sent to. |
+| `POST /auth/logout` | None | Revoke + clear. Unauthenticated on purpose — an expired token must still be able to log out. |
+| `POST /auth/logout-all` | Session | End every session on every device. |
+| `GET /auth/me` | Session | User + profile. |
+| `PATCH /auth/me/profile` | Session | Update the editable fields. |
+| `POST /webhooks/clerk` | Svix signature | Sync. Machine-to-machine, so no session. |
+
+Handled webhook events: `user.created` / `user.updated` (upsert user + profile),
+`user.deleted` (**ban rather than delete** — conversations still reference the id, and a
+hard delete would orphan them), `session.revoked` (revoke tokens + bump `token_version`),
+`user.banned` / `user.unbanned`. Anything else returns 204 so Clerk does not retry it
+forever.
+
+Signature verification runs against the **raw** request body, before parsing — re-serialised
+JSON would not match the digest.
+
+### 12.7 The vulnerability this replaced
+
+Worth recording, because the shape of the bug is more instructive than the fix.
+
+`user_id` used to be a Pydantic field on `ChatRequest` and `ConversationCreate`, defaulting
+to `"default_user"`, and a query parameter on `GET /conversations`. Separately,
+`get_conversation(conversation_id, user_id=None)` skipped the owner clause whenever
+`user_id` was falsy — and every `/conversations/{id}` route called it without one.
+
+Together that meant **any client could read, rename or delete any conversation by id**,
+and could write messages as any user by editing one JSON field.
+
+Both halves had to change:
+
+- The `user_id` fields were **deleted** from the schemas. Making them dynamic would not
+  have helped — as long as the client sends the value, the client picks who to be.
+- `user_id` became a **required** argument on the store methods, so the filter cannot be
+  omitted again by a future caller. The owner clause is also repeated inside the rename
+  and delete updates rather than left to the route's earlier existence check.
+
+Not-yours returns **404, not 403**, so the API never confirms that an id exists to someone
+who cannot see it.
+
+### 12.8 Configuration
+
+```
+CLERK_SECRET_KEY=sk_...         CLERK_PUBLISHABLE_KEY=pk_...
+CLERK_WEBHOOK_SECRET=whsec_...  # the signing secret, not a URL
+JWT_SECRET=<32 random bytes, hex>
+JWT_ALGORITHM=HS256
+ACCESS_TOKEN_TTL_MIN=15         REFRESH_TOKEN_TTL_DAYS=7
+COOKIE_SECURE=false             # true in production
+COOKIE_SAMESITE=lax             # "none" if the frontend is on another domain
+COOKIE_DOMAIN=
+```
+
+`JWT_SECRET` must be high-entropy. HS256 signed with a short human-typed string can be
+brute-forced offline from any single issued token, which would let an attacker mint
+admin tokens at will.
+
+`COOKIE_SAMESITE=lax` works in development because `localhost:3000 → localhost:8000` is
+same-site — a port is not part of the site. A production deployment on two different
+domains needs `none`, which browsers only honour together with `Secure`, which requires
+HTTPS on both ends.
+
+Startup logs a warning when `CLERK_SECRET_KEY` or `JWT_SECRET` is missing, because the
+alternative symptom is a 401 at sign-in with no explanation.
+
+### 12.9 Frontend contract
+
+- `proxy.ts` (Next 16 renamed `middleware.ts` → `proxy.ts`) gates every route except
+  `/`, `/sign-in`, `/sign-up`. **With a `src/` directory it must live at `src/proxy.ts`** —
+  at the project root it compiles to an empty manifest and protects nothing, silently.
+- `axios` and the streaming `fetch` both set credentials (`withCredentials` /
+  `credentials: "include"`), or the browser omits the cookie cross-origin.
+- `SessionProvider` performs the `/auth/session` exchange and blocks the app until it
+  resolves, so no child component fires a request that races the cookie.
+- Logging out calls **both** `POST /auth/logout` and Clerk's `signOut()`. Either alone
+  leaves a live session on the other side.
+- `/` is public and interactive while signed out: submitting a prompt stashes it in
+  `sessionStorage`, redirects to sign-in, and replays it once the *backend* session
+  exists — waiting on Clerk alone would race the cookie.

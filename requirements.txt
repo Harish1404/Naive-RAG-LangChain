@@ -22,6 +22,13 @@ langsmith
 python-dotenv
 requests
 
+# Auth. Clerk is the identity provider; this backend is the session authority,
+# so it needs the SDK only to verify Clerk tokens and read OAuth tokens back
+# out. `svix` verifies the webhook signatures that keep the two in sync.
+clerk-backend-api
+pyjwt[crypto]
+svix
+
 pymongo
 motor
 

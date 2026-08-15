@@ -63,6 +63,50 @@ class Settings:
 
     GITHUB_PAT = os.getenv("GITHUB_PAT")
 
+    # ── Auth ─────────────────────────────────────────────────────────────────
+    # Clerk is the identity provider (who someone is); this backend is the
+    # session authority (whether they may act right now). Clerk verifies the
+    # sign-in, we mint our own short access token plus a rotating refresh token
+    # and enforce is_banned/is_verified locally on every request.
+    CLERK_SECRET_KEY = os.getenv("CLERK_SECRET_KEY")
+    CLERK_PUBLISHABLE_KEY = os.getenv("CLERK_PUBLISHABLE_KEY")
+    # Signing secret for the Clerk webhook endpoint. Without webhook sync, a
+    # revocation on Clerk's side would never reach our refresh-token store.
+    CLERK_WEBHOOK_SECRET = os.getenv("CLERK_WEBHOOK_SECRET")
+    # `azp` allowlist: which origins may present a Clerk token to us.
+    CLERK_AUTHORIZED_PARTIES = [
+        origin
+        for origin in (
+            os.getenv("FRONTEND_URL"),
+            "http://localhost:3000",
+        )
+        if origin
+    ]
+
+    JWT_SECRET = os.getenv("JWT_SECRET")
+    JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+    # Short on purpose. The access token is verified without a database read,
+    # so its lifetime is also the worst-case delay before a ban takes effect.
+    ACCESS_TOKEN_TTL_MIN = int(os.getenv("ACCESS_TOKEN_TTL_MIN", "15"))
+    REFRESH_TOKEN_TTL_DAYS = int(os.getenv("REFRESH_TOKEN_TTL_DAYS", "30"))
+
+    ACCESS_COOKIE_NAME = os.getenv("ACCESS_COOKIE_NAME", "access_token")
+    REFRESH_COOKIE_NAME = os.getenv("REFRESH_COOKIE_NAME", "refresh_token")
+    # The refresh cookie is scoped to its own endpoint, so it is never sent on
+    # ordinary API calls — far less exposure than a site-wide cookie.
+    REFRESH_COOKIE_PATH = os.getenv("REFRESH_COOKIE_PATH", "/auth/refresh")
+    COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() == "true"
+    # localhost:3000 -> localhost:8000 is same-site (a port is not part of the
+    # site), so "lax" works in development. Cross-domain production needs
+    # "none", which browsers only honour together with Secure.
+    COOKIE_SAMESITE = os.getenv("COOKIE_SAMESITE", "lax")
+    COOKIE_DOMAIN = os.getenv("COOKIE_DOMAIN") or None
+
+    @property
+    def auth_configured(self) -> bool:
+        """False when the auth env vars are missing, so startup can say so."""
+        return bool(self.CLERK_SECRET_KEY and self.JWT_SECRET)
+
     @property
     def tracing_enabled(self) -> bool:
         return str(self.LANGSMITH_TRACING).lower() == "true" and bool(self.LANGSMITH_API_KEY)
@@ -83,6 +127,10 @@ class Settings:
     mic_sample_rate = MIC_SAMPLE_RATE
     voice_max_tokens = VOICE_MAX_TOKENS
     tts_cache_enabled = TTS_CACHE_ENABLED
+    clerk_secret_key = CLERK_SECRET_KEY
+    clerk_webhook_secret = CLERK_WEBHOOK_SECRET
+    jwt_secret = JWT_SECRET
+    jwt_algorithm = JWT_ALGORITHM
 
 settings = Settings()
 

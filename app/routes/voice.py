@@ -21,6 +21,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.ai.chat import ChatService
 from app.ai.voice import ElevenLabsStream, sentence_chunks, stream_tts, transcribe_pcm
+from app.api.deps import get_current_user_ws
 from app.core.config import settings
 from app.core.ids import is_conversation_id
 from app.memory import window
@@ -75,8 +76,21 @@ async def voice_socket(websocket: WebSocket):
         await websocket.close(code=1008)
         return
 
+    # The origin check above proves where the page came from, not who is using
+    # it. Authentication rides the session cookie, which the browser attaches
+    # to the handshake automatically — the WebSocket API cannot set an
+    # Authorization header, and a token in the query string would end up in
+    # every access log.
+    user = await get_current_user_ws(websocket)
+    if user is None:
+        logger.warning("Rejected unauthenticated voice socket")
+        await websocket.close(code=1008, reason="Not authenticated")
+        return
+
+    user_id = user["_id"]
+
     await websocket.accept()
-    logger.info("Voice socket connected")
+    logger.info(f"Voice socket connected for {user_id}")
 
     audio = bytearray()
     conversation_id: str | None = None
@@ -119,7 +133,9 @@ async def voice_socket(websocket: WebSocket):
                     continue
 
                 pcm, audio = bytes(audio), bytearray()
-                conversation_id = await run_turn(websocket, pcm, conversation_id)
+                conversation_id = await run_turn(
+                    websocket, pcm, conversation_id, user_id
+                )
 
     except WebSocketDisconnect:
         logger.info("Voice socket disconnected")
@@ -132,7 +148,7 @@ async def voice_socket(websocket: WebSocket):
 
 
 async def run_turn(
-    websocket: WebSocket, pcm: bytes, conversation_id: str | None
+    websocket: WebSocket, pcm: bytes, conversation_id: str | None, user_id: str
 ) -> str | None:
     """One utterance in, one spoken answer out. Returns the conversation id."""
     turn = Turn()
@@ -140,7 +156,7 @@ async def run_turn(
 
     # Finding the conversation does not depend on what was said, so it runs
     # alongside transcription instead of queueing behind it.
-    conv_task = asyncio.create_task(_resolve_conversation(conversation_id))
+    conv_task = asyncio.create_task(_resolve_conversation(conversation_id, user_id))
 
     transcript = await transcribe_pcm(pcm)
     turn.mark("stt")
@@ -214,12 +230,12 @@ async def run_turn(
     return conversation_id
 
 
-async def _resolve_conversation(conversation_id: str | None) -> dict:
+async def _resolve_conversation(conversation_id: str | None, user_id: str) -> dict:
     """The existing thread if it is valid and ours, otherwise a fresh one."""
     if conversation_id:
         conversation = await conversation_store.get_conversation(
-            conversation_id, "default_user"
+            conversation_id, user_id
         )
         if conversation is not None:
             return conversation
-    return await conversation_store.create_conversation("default_user")
+    return await conversation_store.create_conversation(user_id)

@@ -63,15 +63,20 @@ sequenceDiagram
 
 ## 2. A Single Chat Turn
 
-This is the core workflow. A request arrives at `POST /chatbot`:
+This is the core workflow. A request arrives at `POST /chatbot`, carrying the session
+cookie set at sign-in:
 
 ```json
 {
   "conversation_id": "conv_9f8b2c1e-...",   // omit to start a new chat
-  "user_prompt": "and where did he study?",
-  "user_id": "default_user"                  // optional
+  "user_prompt": "and where did he study?"
 }
 ```
+
+The body carries **no `user_id`**. The owner is resolved from the session cookie by
+`get_current_user` before the handler runs, and a `user_id` sent in the body is ignored —
+see [architecture.md](architecture.md) §12.7 for why accepting one was a real
+vulnerability. An unauthenticated request never reaches step 1; it is rejected with 401.
 
 ### The eight steps
 
