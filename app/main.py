@@ -20,7 +20,8 @@ from app.db.mongodb import (
     ensure_chat_indexes,
 )
 from app.ai.tools.weather import close_client as close_weather_client
-from app.ai.voice import warm_up as warm_up_stt, remaining_credits
+from app.ai.voice.stt import warm_up as warm_up_stt
+from app.ai.voice.tts import remaining_credits
 from app.ai.chat import warm_up_models, warm_up_llm
 
 
