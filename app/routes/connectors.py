@@ -16,6 +16,7 @@ back to the frontend with a query flag for the toast.
 """
 
 import logging
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import RedirectResponse
@@ -49,10 +50,11 @@ CATALOGUE: list[tuple[str, str, bool]] = [
 def _frontend_redirect(**params: str) -> RedirectResponse:
     """Back to the connectors page with a flag for the toast."""
     base = (settings.FRONTEND_URL or "http://localhost:3000").rstrip("/")
-    query = "&".join(f"{k}={v}" for k, v in params.items())
+    query = urlencode(params) if params else ""
+    target = f"{base}/connectors" + (f"?{query}" if query else "")
     # 303 rather than 302: the browser must switch to GET regardless of how it
     # arrived, which is exactly what "see this other resource instead" means.
-    return RedirectResponse(f"{base}/connectors?{query}", status_code=303)
+    return RedirectResponse(target, status_code=303)
 
 
 @router.get("", response_model=list[ConnectorOut])
