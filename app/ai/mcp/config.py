@@ -43,19 +43,26 @@ GITHUB = MCPServer(
     label="GitHub",
     url=settings.github_mcp_url,
     scopes=tuple(settings.github_oauth_scopes.split()),
-    # Read-only to start. Anything that writes to a user's repositories should
-    # be a deliberate, separate decision — and if it stays read-only, the OAuth
-    # scope can be narrowed from `repo` to `public_repo` for a much smaller
-    # blast radius on a leaked token.
+    # Ten of the twenty-seven the /readonly endpoint offers. Verified against
+    # the live server on 2026-08-17 — do not guess these names, two earlier
+    # guesses (`get_issue`, `get_pull_request`) do not exist and were silently
+    # dropped by the allowlist filter.
+    #
+    # get_me earns its place: without it the model cannot resolve "my" in "what
+    # are my open PRs" to a username, and every other tool needs an owner.
+    # The search_* variants are the cross-repository counterparts of the list_*
+    # ones, which are per-repository.
     allowlist=(
+        "get_me",
         "search_repositories",
         "get_file_contents",
-        "list_issues",
-        "get_issue",
-        "list_pull_requests",
-        "get_pull_request",
-        "search_code",
         "list_commits",
+        "list_issues",
+        "issue_read",
+        "list_pull_requests",
+        "pull_request_read",
+        "search_pull_requests",
+        "search_code",
     ),
 )
 

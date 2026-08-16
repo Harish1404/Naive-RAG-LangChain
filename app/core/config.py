@@ -116,10 +116,21 @@ class Settings:
     # `public_repo` if the tool allowlist stays read-only. Changing it later
     # forces every already-connected user to re-consent.
     GITHUB_OAUTH_SCOPES = os.getenv("GITHUB_OAUTH_SCOPES", "repo read:org read:user")
-    # GitHub's hosted remote MCP server. Configurable because access to it has
-    # been tied to Copilot entitlement and the surface has moved; the fallback
-    # is running the official server locally and pointing this at it.
-    GITHUB_MCP_URL = os.getenv("GITHUB_MCP_URL", "https://api.githubcopilot.com/mcp/")
+    # GitHub's hosted remote MCP server, /readonly variant.
+    #
+    # The suffix is not decoration. Verified against the live server: the plain
+    # endpoint offers 44 tools of which 13 write (create_branch,
+    # create_or_update_file, create_pull_request, ...); /readonly offers 27 and
+    # none of them write. That is a server-side guarantee, independent of the
+    # OAuth scope and of our own allowlist - three layers, and this is the one
+    # an attacker cannot talk their way past by getting the model to ask for a
+    # tool we did not intend to bind.
+    #
+    # Other useful forms: /x/{toolset} narrows by area, and the X-MCP-Toolsets
+    # header does the same. See docs/remote-server.md in github/github-mcp-server.
+    GITHUB_MCP_URL = os.getenv(
+        "GITHUB_MCP_URL", "https://api.githubcopilot.com/mcp/readonly"
+    )
 
     # base64 of 32 random bytes. Encrypts the stored OAuth token — see
     # app/core/crypto.py for why this cannot be a hash.
