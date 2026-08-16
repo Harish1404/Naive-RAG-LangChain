@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from app.core.config import settings
 from app.core.tracing import drop_self
-from app.memory.window import as_text
+from app.ai.messages import as_text
 from app.ai.prompts.router import ROUTER_PROMPT
 
 logger = logging.getLogger(__name__)

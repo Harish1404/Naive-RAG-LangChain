@@ -19,7 +19,7 @@ import time
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from app.ai.chat import ChatService
+from app.ai.chat.service import ChatService
 from app.ai.voice.chunking import sentence_chunks
 from app.ai.voice.stt import transcribe_pcm
 from app.ai.voice.tts import ElevenLabsStream, stream_tts

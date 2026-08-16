@@ -22,7 +22,7 @@ from app.db.mongodb import (
 from app.ai.tools.weather import close_client as close_weather_client
 from app.ai.voice.stt import warm_up as warm_up_stt
 from app.ai.voice.tts import remaining_credits
-from app.ai.chat import warm_up_models, warm_up_llm
+from app.ai.chat.models import warm_up_models, warm_up_llm
 
 
 # Configure logging to output INFO level logs to terminal
