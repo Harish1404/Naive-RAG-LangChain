@@ -37,17 +37,17 @@ class UserRepository:
         email_verified: bool = False,
     ) -> dict:
         """
-        Finds or creates the user behind a Clerk identity, in one round trip.
+        Finds or creates the user behind a Clerk identity.
 
-        This is an upsert rather than a get-then-insert because first sign-in is
-        exactly when a race is possible: a page that fires two requests at once
-        would otherwise run two inserts and hit the unique index on the second.
-        `$setOnInsert` carries the fields that must never be reset on a returning
-        user — most importantly is_banned, which a re-login must not clear.
+        Checks first by clerk_user_id. If not found, checks by email to handle
+        re-registered Clerk accounts or existing user linking. If no user exists,
+        creates a new record safely.
         """
         now = _now()
+        coll = get_user_collection()
 
-        return await get_user_collection().find_one_and_update(
+        # 1. Try finding and updating by clerk_user_id
+        user = await coll.find_one_and_update(
             {"clerk_user_id": clerk_user_id},
             {
                 "$set": {
@@ -56,25 +56,56 @@ class UserRepository:
                     "updated_at": now,
                     "last_login_at": now,
                 },
-                "$setOnInsert": {
-                    "_id": new_user_id(),
-                    "clerk_user_id": clerk_user_id,
-                    # Distinct from email_verified: that is Clerk's fact about the
-                    # address, this is the app's own gate, so it can be revoked
-                    # without touching the provider.
-                    "is_verified": True,
-                    "is_banned": False,
-                    "ban_reason": None,
-                    "banned_at": None,
-                    "role": "user",
-                    # Bumped to invalidate every access token already issued.
-                    "token_version": 0,
-                    "created_at": now,
-                },
             },
-            upsert=True,
             return_document=ReturnDocument.AFTER,
         )
+        if user:
+            return user
+
+        # 2. If not found by clerk_user_id, check if a user exists with this email
+        user = await coll.find_one_and_update(
+            {"email": email},
+            {
+                "$set": {
+                    "clerk_user_id": clerk_user_id,
+                    "email_verified": email_verified,
+                    "updated_at": now,
+                    "last_login_at": now,
+                },
+            },
+            return_document=ReturnDocument.AFTER,
+        )
+        if user:
+            logger.info(f"Linked existing user {user['_id']} ({email}) to new clerk_user_id {clerk_user_id}")
+            return user
+
+        # 3. Create a new user record if not found by clerk_user_id or email
+        new_doc = {
+            "_id": new_user_id(),
+            "clerk_user_id": clerk_user_id,
+            "email": email,
+            "email_verified": email_verified,
+            "is_verified": True,
+            "is_banned": False,
+            "ban_reason": None,
+            "banned_at": None,
+            "role": "user",
+            "token_version": 0,
+            "created_at": now,
+            "updated_at": now,
+            "last_login_at": now,
+        }
+        try:
+            await coll.insert_one(new_doc)
+            return new_doc
+        except Exception as e:
+            # Handle potential race condition if another request created it concurrently
+            existing = await coll.find_one({
+                "$or": [{"clerk_user_id": clerk_user_id}, {"email": email}]
+            })
+            if existing:
+                return existing
+            raise e
 
     async def set_banned(
         self, user_id: str, banned: bool, reason: str | None = None

@@ -89,9 +89,19 @@ app = FastAPI(lifespan=lifespan)
 # Dev defaults. `expose_headers` is the part that matters: without it a browser
 # cannot read X-Conversation-Id off the streaming response at all, so a new
 # chat would have no way to learn its own id. Tighten allow_origins for prod.
+origins = [
+    origin
+    for origin in (
+        settings.FRONTEND_URL,
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    )
+    if origin
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.FRONTEND_URL, "http://localhost:3000"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

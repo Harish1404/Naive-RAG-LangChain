@@ -84,6 +84,12 @@ async def create_session(request: Request, response: Response):
         )
     except AuthError as e:
         raise HTTPException(status_code=e.status_code, detail=e.message) from e
+    except Exception as e:
+        logger.error(f"Unexpected error during session establishment: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal authentication error: {str(e)}",
+        ) from e
 
     set_auth_cookies(response, access_token, refresh_token)
     logger.info(f"Session established for {user['_id']}")
