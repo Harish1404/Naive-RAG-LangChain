@@ -19,6 +19,7 @@ USER_PREFIX = "usr"
 PROFILE_PREFIX = "prf"
 SESSION_PREFIX = "sess"
 FAMILY_PREFIX = "fam"
+CONNECTOR_PREFIX = "conn"
 
 
 def new_conversation_id() -> str:
@@ -51,6 +52,11 @@ def new_session_id() -> str:
 def new_family_id() -> str:
     """Groups every refresh token descended from one login, for reuse detection."""
     return f"{FAMILY_PREFIX}_{uuid4()}"
+
+
+def new_connector_id() -> str:
+    """One per (user, provider) pair — a user's link to GitHub, Gmail, and so on."""
+    return f"{CONNECTOR_PREFIX}_{uuid4()}"
 
 
 def is_valid_id(value: str, prefix: str) -> bool:

@@ -194,6 +194,7 @@ async def run_turn(
             conversation_id=conversation_id,
             history=history,
             voice_mode=True,
+            user_id=user_id,
         )
 
         first_audio = False

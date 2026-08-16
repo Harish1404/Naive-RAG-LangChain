@@ -5,6 +5,10 @@ load_dotenv()
 
 class Settings:
     FRONTEND_URL = os.getenv("FRONTEND_URL")
+    # Where *we* are reachable. Needed to build the OAuth redirect_uri, which
+    # GitHub matches against the callback registered on the OAuth app — a
+    # mismatch is rejected before the user ever sees a consent screen.
+    BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
     GROQ_API_KEY = os.getenv("GROQ_API_KEY")
     FLUX_AI = os.getenv("FLUX_AI")
@@ -102,10 +106,74 @@ class Settings:
     COOKIE_SAMESITE = os.getenv("COOKIE_SAMESITE", "lax")
     COOKIE_DOMAIN = os.getenv("COOKIE_DOMAIN") or None
 
+    # ── Connectors (MCP) ─────────────────────────────────────────────────────
+    # Our own GitHub OAuth app, registered at github.com/settings/developers.
+    # The callback there must exactly match BACKEND_URL + /connectors/github/callback.
+    GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID")
+    GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET")
+    # Space-separated, the format GitHub's authorize endpoint expects.
+    #
+    # `repo` is required and there is no narrower option: GitHub has no
+    # read-only private-repo scope, and the write workflow (create repository,
+    # branch, push, open PR) needs write on private repos. `public_repo` would
+    # cover public repos only, at the cost of reaching no private ones at all.
+    #
+    # Changing this later forces every already-connected user to re-consent.
+    GITHUB_OAUTH_SCOPES = os.getenv("GITHUB_OAUTH_SCOPES", "repo read:org read:user")
+    # GitHub's hosted remote MCP server, in two faces.
+    #
+    # READ is the /readonly variant and is what ordinary questions use. The
+    # suffix is not decoration: measured against the live server, the plain
+    # endpoint offers 44 tools of which 13 write (create_branch,
+    # create_or_update_file, create_pull_request, delete_file,
+    # merge_pull_request, ...), while /readonly offers 27 and none of them
+    # write. That is enforced server-side, so it holds regardless of what the
+    # OAuth scope permits and regardless of what our allowlist asks for.
+    #
+    # WRITE is the plain endpoint, reached only by the MCP_WRITE route, which
+    # the router picks only when the user explicitly asks to create something.
+    # A turn that merely reads a repository never has a write tool bound - see
+    # the module docstring in app/ai/mcp/config.py for why that separation is
+    # the point rather than an implementation detail.
+    #
+    # Other useful forms: /x/{toolset} narrows by area, and the X-MCP-Toolsets
+    # header does the same. See docs/remote-server.md in github/github-mcp-server.
+    GITHUB_MCP_READ_URL = os.getenv(
+        "GITHUB_MCP_READ_URL", "https://api.githubcopilot.com/mcp/readonly"
+    )
+    GITHUB_MCP_WRITE_URL = os.getenv(
+        "GITHUB_MCP_WRITE_URL", "https://api.githubcopilot.com/mcp/"
+    )
+
+    # base64 of 32 random bytes. Encrypts the stored OAuth token — see
+    # app/core/crypto.py for why this cannot be a hash.
+    CONNECTOR_ENC_KEY = os.getenv("CONNECTOR_ENC_KEY")
+
+    # How long a user's MCP tool list is reused before being re-fetched.
+    # Listing tools is a network round-trip on an otherwise hot path.
+    MCP_TOOL_CACHE_TTL = int(os.getenv("MCP_TOOL_CACHE_TTL", "600"))
+    # How long the signed OAuth `state` stays valid. Long enough to read a
+    # consent screen, short enough that a leaked authorize URL goes stale.
+    OAUTH_STATE_TTL_MIN = int(os.getenv("OAUTH_STATE_TTL_MIN", "5"))
+
     @property
     def auth_configured(self) -> bool:
         """False when the auth env vars are missing, so startup can say so."""
         return bool(self.CLERK_SECRET_KEY and self.JWT_SECRET)
+
+    @property
+    def github_connector_configured(self) -> bool:
+        """False when the GitHub connector cannot work, so startup can say so."""
+        return bool(
+            self.GITHUB_CLIENT_ID
+            and self.GITHUB_CLIENT_SECRET
+            and self.CONNECTOR_ENC_KEY
+        )
+
+    @property
+    def github_redirect_uri(self) -> str:
+        """Built rather than configured, so it cannot drift from the route."""
+        return f"{self.BACKEND_URL.rstrip('/')}/connectors/github/callback"
 
     @property
     def tracing_enabled(self) -> bool:
@@ -131,6 +199,14 @@ class Settings:
     clerk_webhook_secret = CLERK_WEBHOOK_SECRET
     jwt_secret = JWT_SECRET
     jwt_algorithm = JWT_ALGORITHM
+    github_client_id = GITHUB_CLIENT_ID
+    github_client_secret = GITHUB_CLIENT_SECRET
+    github_oauth_scopes = GITHUB_OAUTH_SCOPES
+    github_mcp_read_url = GITHUB_MCP_READ_URL
+    github_mcp_write_url = GITHUB_MCP_WRITE_URL
+    connector_enc_key = CONNECTOR_ENC_KEY
+    mcp_tool_cache_ttl = MCP_TOOL_CACHE_TTL
+    oauth_state_ttl_min = OAUTH_STATE_TTL_MIN
 
 settings = Settings()
 

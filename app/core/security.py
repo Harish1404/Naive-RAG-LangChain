@@ -93,6 +93,73 @@ def decode_access_token(token: str) -> dict[str, Any]:
     return payload
 
 
+# ── OAuth state ──────────────────────────────────────────────────────────────
+
+def create_oauth_state(user_id: str, provider: str) -> str:
+    """
+    The `state` parameter for an outbound OAuth authorization request.
+
+    A signed token rather than a random nonce in server-side storage, because it
+    has to do two jobs at once:
+
+      * CSRF — a callback we did not initiate carries no valid signature, so an
+        attacker cannot walk a victim's browser through a code exchange.
+      * Identity — the redirect back from GitHub is a cross-site navigation, and
+        relying on our session cookie surviving it is fragile. The user id rides
+        inside the state instead, so the callback knows who came back without
+        trusting anything the caller supplied.
+
+    Short-lived: long enough to read a consent screen, short enough that an
+    authorize URL captured from a log or shoulder-surfed is useless later.
+    """
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": user_id,
+        "provider": provider,
+        "iat": now,
+        "exp": now + timedelta(minutes=settings.OAUTH_STATE_TTL_MIN),
+        # Checked on the way back in, so a state token can never be presented as
+        # an access token and vice versa.
+        "typ": "oauth_state",
+        # Makes two states minted in the same second for the same user differ,
+        # so one cannot be mistaken for a replay of the other.
+        "jti": secrets.token_urlsafe(8),
+    }
+    return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
+
+
+def decode_oauth_state(state: str, provider: str) -> str:
+    """
+    Verifies a returning `state` and returns the user id that minted it.
+
+    Raises TokenError on anything suspect — expired, forged, wrong type, or
+    minted for a different provider. The provider check stops a state issued for
+    one connector being replayed against another.
+    """
+    try:
+        payload = jwt.decode(
+            state,
+            settings.JWT_SECRET,
+            algorithms=[settings.JWT_ALGORITHM],
+        )
+    except jwt.ExpiredSignatureError as e:
+        raise TokenError("OAuth state expired — start the connection again") from e
+    except jwt.InvalidTokenError as e:
+        raise TokenError("Invalid OAuth state") from e
+
+    if payload.get("typ") != "oauth_state":
+        raise TokenError("Wrong token type")
+
+    if payload.get("provider") != provider:
+        raise TokenError("OAuth state was issued for a different provider")
+
+    user_id = payload.get("sub")
+    if not user_id:
+        raise TokenError("OAuth state carries no subject")
+
+    return user_id
+
+
 # ── Refresh tokens ───────────────────────────────────────────────────────────
 
 def generate_refresh_token() -> str:

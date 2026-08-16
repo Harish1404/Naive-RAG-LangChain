@@ -41,10 +41,12 @@ class ChatService:
         conversation_id: str,
         history: list[BaseMessage] | None = None,
         voice_mode: bool = False,
+        user_id: str = "",
     ):
         self.ctx = TurnContext(
             user_prompt=user_prompt,
             conversation_id=conversation_id,
+            user_id=user_id,
             # Already trimmed to the last k turns by the caller.
             history=list(history or []),
             voice_mode=voice_mode,
