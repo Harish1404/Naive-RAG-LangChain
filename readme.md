@@ -47,9 +47,8 @@ Before executing any retrieval or LLM generation, an ultra-fast classification c
 - **Only new or updated chunks** are passed to the embedding API, guaranteeing zero redundant embedding cost and fast boot times.
 
 ### 5. Multi-Modal & Specialized AI Modules
-- **3-Stage LCEL Chain (`app/ai/chain.py`)**: Concept extraction (JSON parser) → Concept enrichment → Markdown report generation.
-- **Image Generation (`app/ai/image.py`)**: Generates images using LiteLLM and Gemini Imagen 3 (`gemini/Gemini 2.5 Flash Preview Image`), returning PIL image instances.
-- **Voice Engine (`app/ai/voice.py`)**: Speech-to-Text via Groq Whisper Turbo (`whisper-large-v3-turbo`) and streaming Text-to-Speech via the ElevenLabs `stream-input` WebSocket (`eleven_flash_v2_5`, `pcm_24000`).
+- **Voice Engine (`app/ai/voice/`)**: Speech-to-Text via Groq Whisper Turbo (`whisper-large-v3-turbo`) in `stt.py`, and streaming Text-to-Speech via the ElevenLabs `stream-input` WebSocket (`eleven_flash_v2_5`, `pcm_24000`) in `tts.py`, with the abbreviation-aware sentence chunker between them in `chunking.py`.
+- **Experimental, not wired up (`app/ai/experimental/`)**: a 3-stage LCEL concept chain (`concept_chain.py`) and Gemini image generation via LiteLLM (`image_gen.py`). Neither is reachable from any endpoint, and `image_gen.py` needs `litellm` + `Pillow`, which are deliberately not in `requirements.txt` — see [`app/ai/experimental/README.md`](app/ai/experimental/README.md).
 
 ### 6. Authentication & Per-User Isolation
 Clerk handles identity; this backend owns the session and every authorization decision — see **[docs/architecture.md](docs/architecture.md) §12**.
@@ -73,12 +72,43 @@ Push-to-talk speech in, synthesised speech out, over a single WebSocket at **`/w
 ```
 Langchain-RAG/
 ├── app/
-│   ├── ai/
-│   │   ├── chain.py          # 3-Stage LCEL Concept Extraction & Enrichment Pipeline
-│   │   ├── chat.py           # Core ChatService, Router integration & Tool-calling loop
-│   │   ├── image.py          # Image generation via LiteLLM (Gemini Imagen 3)
-│   │   ├── router.py         # Lightweight QueryRouter classification chain
-│   │   └── voice.py          # STT (Groq Whisper), streaming TTS (ElevenLabs WS), sentence chunker
+│   ├── ai/                   # All AI concerns. Only persistence.py and vector_store.py touch the DB
+│   │   ├── messages.py       # content_to_text / as_text — pure helpers, no model, no DB
+│   │   ├── chat/             # One turn, from question to answer tokens
+│   │   │   ├── service.py    # ChatService — THE ORCHESTRATOR: route -> node -> stream -> persist
+│   │   │   ├── context.py    # TurnContext: everything one turn knows about itself
+│   │   │   ├── models.py     # LLMBundle, build_models (lru_cached), the two warm-ups
+│   │   │   ├── nodes/        # The four answer paths, one file each
+│   │   │   │   ├── base.py   # The node signature every path shares
+│   │   │   │   ├── rag.py    # Retrieve resume chunks, answer from them (no tools)
+│   │   │   │   ├── tool.py   # Call the weather tool, answer from it (no retrieval)
+│   │   │   │   ├── both.py   # Retrieve first, then run the tool loop
+│   │   │   │   └── direct.py # Answer from the model's own knowledge (neither)
+│   │   │   ├── tool_loop.py  # The hand-written tool-call round-trip (TOOL + BOTH)
+│   │   │   ├── streaming.py  # Model chunks -> plain text tokens
+│   │   │   └── persistence.py# Writes the finished answer back to MongoDB
+│   │   ├── router/
+│   │   │   └── query_router.py # QueryRouter: route + question rewritten to stand alone
+│   │   ├── rag/
+│   │   │   ├── data_processor.py # File loader (.pdf, .txt, .md) & RecursiveCharacterTextSplitter
+│   │   │   ├── embeddings.py     # Gemini GoogleGenerativeAIEmbeddings (768d)
+│   │   │   ├── pipeline.py       # Ingestion & retrieval orchestrator singleton
+│   │   │   └── vector_store.py   # MongoDB Atlas Vector/Keyword search & RRF implementation
+│   │   ├── voice/
+│   │   │   ├── stt.py        # Speech to text via Groq Whisper Turbo
+│   │   │   ├── chunking.py   # Token stream -> speakable sentences (abbreviation-aware)
+│   │   │   └── tts.py        # Streaming TTS over the ElevenLabs WebSocket, cache, quota
+│   │   ├── tools/
+│   │   │   ├── registry.py   # The one list of callable tools; loop resolves by name
+│   │   │   └── weather.py    # Async weather tool over a shared httpx client
+│   │   ├── prompts/
+│   │   │   ├── rag.py        # System prompt & context formatter for RAG
+│   │   │   ├── router.py     # Router prompt + the TOOL/BOTH/DIRECT system prompts
+│   │   │   ├── voice.py      # Spoken-answer shaping: 2-3 sentences, no markdown
+│   │   │   └── chain.py      # Prompts for the 3-stage experimental chain
+│   │   └── experimental/     # Written, NOT wired to any route — see its README
+│   │       ├── concept_chain.py # 3-stage LCEL concept extraction & enrichment
+│   │       └── image_gen.py     # Image generation via LiteLLM (needs litellm + Pillow)
 │   ├── api/
 │   │   └── deps.py           # Auth dependencies: get_current_user, require_verified/admin, WS variant
 │   ├── core/
@@ -94,16 +124,6 @@ Langchain-RAG/
 │   │   └── clerk_service.py  # Clerk token verification, user lookup, OAuth token read
 │   ├── db/
 │   │   └── mongodb.py        # Motor async MongoDB client & connection lifecycle
-│   ├── prompts/
-│   │   ├── chain_prompts.py  # Prompts for 3-stage chain pipeline
-│   │   ├── rag_prompt.py    # System prompts & context formatters for RAG
-│   │   ├── router_prompt.py # System prompts for Router & route-specific models
-│   │   └── voice_prompt.py  # Spoken-answer shaping: 2-3 sentences, no markdown
-│   ├── rag/
-│   │   ├── data_processor.py # File loader (.pdf, .txt, .md) & RecursiveCharacterTextSplitter
-│   │   ├── embeddings.py     # Gemini GoogleGenerativeAIEmbeddings (768d)
-│   │   ├── rag_pipeline.py   # Ingestion & retrieval orchestrator singleton
-│   │   └── vector_store.py   # MongoDB Atlas Vector/Keyword search & RRF implementation
 │   ├── memory/
 │   │   ├── store.py          # MongoDB persistence for conversations & messages
 │   │   └── window.py         # Window buffer: last k turns -> LangChain messages

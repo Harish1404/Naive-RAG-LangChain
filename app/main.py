@@ -10,7 +10,7 @@ from app.routes.chatbot import router as chatbot_router
 from app.routes.conversations import router as conversations_router
 from app.routes.voice import router as voice_router
 from app.routes.webhooks import router as webhooks_router
-from app.rag.rag_pipeline import rag_pipeline
+from app.ai.rag.pipeline import rag_pipeline
 from app.core.tracing import verify_langsmith_connection
 from app.db.mongodb import (
     connect_to_mongo,
@@ -19,9 +19,10 @@ from app.db.mongodb import (
     ensure_auth_indexes,
     ensure_chat_indexes,
 )
-from app.tools.weather import close_client as close_weather_client
-from app.ai.voice import warm_up as warm_up_stt, remaining_credits
-from app.ai.chat import warm_up_models, warm_up_llm
+from app.ai.tools.weather import close_client as close_weather_client
+from app.ai.voice.stt import warm_up as warm_up_stt
+from app.ai.voice.tts import remaining_credits
+from app.ai.chat.models import warm_up_models, warm_up_llm
 
 
 # Configure logging to output INFO level logs to terminal

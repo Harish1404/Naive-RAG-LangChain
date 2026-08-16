@@ -11,6 +11,7 @@ rewritten in every file:
 
   drop_self                -> keep `self` out of traced method inputs
   drop_self_and_embedding  -> also keep a 768-float vector out of the payload
+  drop_plumbing            -> also keep the wiring arguments out of the payload
   join_tokens              -> turn a stream of tokens back into one answer
   as_documents             -> let LangSmith render retrieved chunks properly
   set_run_metadata         -> tag the run with something known only at runtime
@@ -45,6 +46,8 @@ def drop_self(inputs: dict) -> dict:
     Note this is also why a hook CANNOT reach `self` to pull extra fields off
     the instance — for that, see set_run_inputs().
     """
+    if not isinstance(inputs, dict):
+        return {}
     return {key: value for key, value in inputs.items() if key != "self"}
 
 
@@ -65,6 +68,28 @@ def drop_self_and_embedding(inputs: dict) -> dict:
     return cleaned
 
 
+def drop_plumbing(inputs: dict) -> dict:
+    """
+    Same as drop_self, but also drops `ctx` and `llms`.
+
+    The nodes and the tool loop are plain functions taking (ctx, llms) rather
+    than methods on a service, so there is no `self` for langsmith to strip any
+    more — the wiring arrives as ordinary arguments instead. Left in, a span
+    would carry a repr of two chat clients and the whole TurnContext (history
+    included) on top of the inputs actually worth reading.
+
+    What the nodes genuinely want on the span is published by hand with
+    set_run_inputs(), the same way it always was.
+    """
+    if not isinstance(inputs, dict):
+        return {}
+    return {
+        key: value
+        for key, value in drop_self(inputs).items()
+        if key not in ("ctx", "llms")
+    }
+
+
 def summarize_messages(inputs: dict) -> dict:
     """
     Condenses a LangChain message list down to role + a short text preview.
@@ -72,7 +97,7 @@ def summarize_messages(inputs: dict) -> dict:
     Used for the tool loop, where dumping full message objects (including the
     retrieved context and raw tool output) makes the span unreadable.
     """
-    cleaned = drop_self(inputs)
+    cleaned = drop_plumbing(inputs)
 
     messages = cleaned.get("messages")
     if isinstance(messages, (list, tuple)):

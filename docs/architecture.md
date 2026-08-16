@@ -54,16 +54,16 @@ graph TD
     AUTHSVC --> REPOS(repositories/<br/>user, profile, session)
     REPOS --> DB
 
-    VOICEEP --> STT(Groq Whisper<br/>ai/voice.py)
+    VOICEEP --> STT(Groq Whisper<br/>ai/voice/stt.py)
     STT --> SERVICE
-    CHATEP --> SERVICE(ChatService<br/>four answer paths<br/>ai/chat.py)
+    CHATEP --> SERVICE(ChatService<br/>orchestrator<br/>ai/chat/service.py)
 
-    SERVICE --> ROUTER(QueryRouter<br/>route + rewritten question<br/>ai/router.py)
+    SERVICE --> ROUTER(QueryRouter<br/>route + rewritten question<br/>ai/router/query_router.py)
     SERVICE --> WINDOW(window.py<br/>last k turns)
     SERVICE --> PIPE{RAGPipeline.retrieve}
     SERVICE --> HOOK[Weather webhook]
     SERVICE --> LLM[Groq llama-3.1-8b<br/>Gemini 2.5 Flash fallback]
-    SERVICE --> TTS(ElevenLabs stream-input<br/>ai/voice.py)
+    SERVICE --> TTS(ElevenLabs stream-input<br/>ai/voice/tts.py)
     TTS --> VOICEEP
 
     ROUTER --> LLM
@@ -86,6 +86,16 @@ how it is *stored*, and vice versa.
 The auth side repeats the pattern one layer deeper: `repositories/` know only Mongo,
 `services/` hold the policy, and `api/deps.py` is the only place a route learns who is
 calling. A route never queries a user collection directly.
+
+`app/ai/` holds the same line from the other direction: **the answering path does not
+touch the database.** A caller loads history and passes it in; tokens come back out. No
+node, prompt, router or tool reads or writes Mongo. Two modules break that deliberately —
+`ai/chat/persistence.py`, which writes the finished answer back, and `ai/rag/vector_store.py`,
+where the Atlas collection *is* the vector store — and a grep should never find a third:
+
+```bash
+grep -rn "app\.db\|app\.memory\|app\.repositories" app/ai/
+```
 
 ---
 
@@ -288,7 +298,7 @@ degrades to `RAG` with the original question untouched.
 ### The tool loop
 
 There is no `AgentExecutor` and no LangGraph — the loop is written by hand in
-`_run_tool_loop`, which makes the control flow completely visible:
+`app/ai/chat/tool_loop.py`, which makes the control flow completely visible:
 
 1. Ask the tool-aware model what to do.
 2. If it requested tools, run each one and append a `ToolMessage`.
@@ -298,7 +308,7 @@ There is no `AgentExecutor` and no LangGraph — the loop is written by hand in
 Because the loop is owned here, `ToolMessage` content is never yielded to the client —
 raw webhook JSON cannot leak into the stream.
 
-The tool itself (`app/tools/weather.py`) is an **async** tool built on a single shared
+The tool itself (`app/ai/tools/weather.py`) is an **async** tool built on a single shared
 `httpx.AsyncClient`, created lazily and closed in the app's shutdown lifespan.
 
 > **Teaching note — most of a "slow API call" was never the API.** The webhook's own work
@@ -416,17 +426,32 @@ app/
 ├── memory/
 │   ├── store.py             # persistence: conversations & messages (MongoDB only)
 │   └── window.py            # window buffer: last k turns -> LangChain messages
-├── ai/
-│   ├── router.py            # QueryRouter -> RouteDecision(route, standalone_question)
-│   ├── chat.py              # ChatService: 4 route branches, tool loop, persistence
-│   ├── voice.py             # STT (Groq Whisper), TTS (ElevenLabs WS), sentence chunker
-│   └── chain.py             # 3-stage LCEL chain: extract -> enrich -> format
-├── rag/
-│   ├── rag_pipeline.py      # ingest() / retrieve()
-│   ├── vector_store.py      # Atlas $vectorSearch + $search + RRF
-│   ├── embeddings.py        # Gemini embeddings, 768d
-│   └── data_processor.py    # loaders + RecursiveCharacterTextSplitter
-├── prompts/                 # router, RAG and per-route system prompts
+├── ai/                      # every AI concern, grouped by what it does
+│   ├── messages.py          # content_to_text / as_text — pure, no model, no DB
+│   ├── chat/                # one turn, question -> answer tokens
+│   │   ├── service.py       # ChatService: route -> node -> stream -> persist
+│   │   ├── context.py       # TurnContext: what one turn knows about itself
+│   │   ├── models.py        # LLMBundle + build_models (lru_cached) + warm-ups
+│   │   ├── nodes/           # rag.py tool.py both.py direct.py + the NODES map
+│   │   ├── tool_loop.py     # the hand-written tool round-trip (TOOL and BOTH)
+│   │   ├── streaming.py     # model chunks -> plain text tokens
+│   │   └── persistence.py   # the ONLY answering-path module that writes to Mongo
+│   ├── router/
+│   │   └── query_router.py  # QueryRouter -> RouteDecision(route, standalone_question)
+│   ├── rag/
+│   │   ├── pipeline.py      # ingest() / retrieve()
+│   │   ├── vector_store.py  # Atlas $vectorSearch + $search + RRF
+│   │   ├── embeddings.py    # Gemini embeddings, 768d
+│   │   └── data_processor.py # loaders + RecursiveCharacterTextSplitter
+│   ├── voice/
+│   │   ├── stt.py           # Groq Whisper: PCM -> transcript
+│   │   ├── chunking.py      # token stream -> speakable sentences
+│   │   └── tts.py           # ElevenLabs WS, on-disk cache, credit check
+│   ├── tools/
+│   │   ├── registry.py      # the one list; the loop resolves tools by name
+│   │   └── weather.py       # async tool over a shared httpx client
+│   ├── prompts/             # router, RAG and per-route system prompts
+│   └── experimental/        # written, NOT wired to any route
 ├── routes/
 │   ├── auth.py              # /auth/session, /refresh, /logout, /me, /me/profile
 │   ├── webhooks.py          # POST /webhooks/clerk  (Svix-signed, not user-authenticated)

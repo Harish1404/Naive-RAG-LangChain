@@ -6,7 +6,7 @@ from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
 
-from app.prompts.chain_prompts import STAGE_1_EXTRACT, STAGE_2_ENRICH, STAGE_3_FORMAT
+from app.ai.prompts.chain import STAGE_1_EXTRACT, STAGE_2_ENRICH, STAGE_3_FORMAT
 from app.core.config import settings
 
 # logger lets us print debug/error messages to the console with proper labels

@@ -98,7 +98,7 @@ only throw away quality.
 
 ---
 
-## 4. `app/ai/voice.py` — the audio ends
+## 4. `app/ai/voice/` — the audio ends
 
 This file was **rewritten from scratch**. What was there before was orphaned (nothing
 imported it), imported two packages that were not installed (`litellm`, `edge_tts`), and
@@ -252,7 +252,7 @@ was found by reading this line, and two of the four guesses made beforehand were
 
 ---
 
-## 6. `app/ai/chat.py` and the voice prompt
+## 6. `app/ai/chat/` and the voice prompt
 
 ### `voice_mode` flag
 
@@ -268,7 +268,7 @@ Injecting the prompt at the head of the history — rather than editing each of 
 branch generators — means it applies to `RAG`, `TOOL`, `BOTH` and `DIRECT` alike, and
 lands immediately after whichever system prompt that branch uses.
 
-### `app/prompts/voice_prompt.py`
+### `app/ai/prompts/voice.py`
 
 New file. Spoken answers need different shaping from written ones:
 
@@ -389,7 +389,7 @@ built once per token budget:
 
 ```python
 @lru_cache(maxsize=4)
-def _build_models(max_tokens: int): ...
+def build_models(max_tokens: int) -> LLMBundle: ...   # app/ai/chat/models.py
 ```
 
 Result: 1215 ms → **0.03 ms**. Cached on `max_tokens` because that is the only thing that

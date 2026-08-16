@@ -3,7 +3,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
-from app.ai.chat import ChatService
+from app.ai.chat.service import ChatService
 from app.api.deps import get_current_user_id
 from app.core.ids import is_conversation_id
 from app.memory import window

@@ -14,7 +14,7 @@ confused replies.
 """
 
 import logging
-from typing import Optional, Sequence
+from typing import Sequence
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
@@ -84,20 +84,3 @@ async def load(conversation_id: str, exclude_latest: bool = True) -> list[BaseMe
         # entirely. Degrade.
         logger.error(f"Could not load memory for {conversation_id}: {e}")
         return []
-
-
-def as_text(messages: Optional[Sequence[BaseMessage]], empty: str = "(no previous messages)") -> str:
-    """
-    Flattens messages into a plain transcript for the router prompt.
-
-    The router is a small, fast classifier fed through a single prompt
-    template, so it takes history as text rather than as a message list.
-    """
-    if not messages:
-        return empty
-
-    lines = []
-    for message in messages:
-        role = "User" if isinstance(message, HumanMessage) else "Assistant"
-        lines.append(f"{role}: {message.content}")
-    return "\n".join(lines)

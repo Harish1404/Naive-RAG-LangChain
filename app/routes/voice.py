@@ -19,8 +19,10 @@ import time
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from app.ai.chat import ChatService
-from app.ai.voice import ElevenLabsStream, sentence_chunks, stream_tts, transcribe_pcm
+from app.ai.chat.service import ChatService
+from app.ai.voice.chunking import sentence_chunks
+from app.ai.voice.stt import transcribe_pcm
+from app.ai.voice.tts import ElevenLabsStream, stream_tts
 from app.api.deps import get_current_user_ws
 from app.core.config import settings
 from app.core.ids import is_conversation_id
