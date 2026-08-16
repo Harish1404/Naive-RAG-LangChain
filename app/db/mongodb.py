@@ -33,7 +33,14 @@ def get_refresh_token_collection():
 
 
 def get_connector_collection():
-    return get_db()["connector"]
+    """
+    One document per (user, provider) connection — GitHub today, more later.
+
+    Plural to match `conversations` / `messages` / `refresh_tokens`. It was
+    `connector` while this was an unused placeholder; nothing was ever written
+    to it, so there is nothing to migrate.
+    """
+    return get_db()["connectors"]
 
 
 def get_vector_collection():
@@ -122,6 +129,32 @@ async def ensure_auth_indexes():
 
     except Exception as e:
         logger.error(f"❌ Failed to create auth indexes: {e}")
+        raise e
+
+
+async def ensure_connector_indexes():
+    """
+    Creates the index the connectors collection depends on. Idempotent.
+
+    The unique (user_id, provider) index is what makes reconnecting an upsert
+    instead of a second row: without it, a user who clicks Connect twice ends
+    up with two GitHub documents and the tool layer has to guess which token is
+    live. One connection per provider per user is the rule, enforced here
+    rather than hoped for in the service.
+    """
+    try:
+        logger.info("⏳ Ensuring connector indexes...")
+
+        await get_connector_collection().create_index(
+            [("user_id", 1), ("provider", 1)],
+            unique=True,
+            name="user_provider_unique",
+        )
+
+        logger.info("✅ Connector indexes ready.")
+
+    except Exception as e:
+        logger.error(f"❌ Failed to create connector indexes: {e}")
         raise e
 
 

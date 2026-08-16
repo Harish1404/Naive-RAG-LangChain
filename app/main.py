@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.routes.auth import router as auth_router
 from app.routes.chatbot import router as chatbot_router
+from app.routes.connectors import router as connectors_router
 from app.routes.conversations import router as conversations_router
 from app.routes.voice import router as voice_router
 from app.routes.webhooks import router as webhooks_router
@@ -18,6 +19,7 @@ from app.db.mongodb import (
     get_database_client,
     ensure_auth_indexes,
     ensure_chat_indexes,
+    ensure_connector_indexes,
 )
 from app.ai.tools.weather import close_client as close_weather_client
 from app.ai.voice.stt import warm_up as warm_up_stt
@@ -45,6 +47,7 @@ async def lifespan(app: FastAPI):
     await connect_to_mongo()
     await ensure_chat_indexes()
     await ensure_auth_indexes()
+    await ensure_connector_indexes()
 
     # Loud rather than silent: without these the auth routes cannot mint a
     # session, and the failure would otherwise only show up as a 401 at
@@ -115,6 +118,7 @@ app.include_router(auth_router)
 app.include_router(webhooks_router)
 app.include_router(chatbot_router)
 app.include_router(conversations_router)
+app.include_router(connectors_router)
 app.include_router(voice_router)
 
 
