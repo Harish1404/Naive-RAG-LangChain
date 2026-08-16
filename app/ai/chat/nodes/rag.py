@@ -21,7 +21,10 @@ from app.core.tracing import drop_plumbing, join_tokens, set_run_inputs
 )
 async def stream(ctx: TurnContext, llms: LLMBundle) -> AsyncIterator[str]:
     """Answers strictly from resume chunks retrieved out of MongoDB Atlas."""
-    set_run_inputs(user_prompt=ctx.user_prompt, search_query=ctx.search_query)
+    set_run_inputs(
+        user_prompt=getattr(ctx, "user_prompt", ""),
+        search_query=getattr(ctx, "search_query", ""),
+    )
 
     # Retrieval uses the router's rewritten question, not the raw one: a
     # follow-up such as "and where did he study?" has nothing to embed.

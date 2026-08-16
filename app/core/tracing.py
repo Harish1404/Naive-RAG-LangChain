@@ -46,6 +46,8 @@ def drop_self(inputs: dict) -> dict:
     Note this is also why a hook CANNOT reach `self` to pull extra fields off
     the instance — for that, see set_run_inputs().
     """
+    if not isinstance(inputs, dict):
+        return {}
     return {key: value for key, value in inputs.items() if key != "self"}
 
 
@@ -79,6 +81,8 @@ def drop_plumbing(inputs: dict) -> dict:
     What the nodes genuinely want on the span is published by hand with
     set_run_inputs(), the same way it always was.
     """
+    if not isinstance(inputs, dict):
+        return {}
     return {
         key: value
         for key, value in drop_self(inputs).items()

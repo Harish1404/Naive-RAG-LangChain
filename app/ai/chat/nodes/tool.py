@@ -20,7 +20,7 @@ from app.core.tracing import drop_plumbing, join_tokens, set_run_inputs
 )
 async def stream(ctx: TurnContext, llms: LLMBundle) -> AsyncIterator[str]:
     """Answers using the weather tool only. No retrieval happens here."""
-    set_run_inputs(user_prompt=ctx.user_prompt)
+    set_run_inputs(user_prompt=getattr(ctx, "user_prompt", ""))
 
     # A fresh list every call: run_tool_loop appends to what it is given,
     # and ctx.history must never be mutated — it is replayed as-is and

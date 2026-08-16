@@ -8,6 +8,7 @@ it.
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import json
 import logging
@@ -150,6 +151,8 @@ async def stream_tts(
         await sender
     finally:
         sender.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await sender
         await stream.close()
 
 
@@ -200,7 +203,13 @@ async def remaining_credits() -> int | None:
             )
             return None
         d = r.json()
-        return d["character_limit"] - d["character_count"]
+        if not isinstance(d, dict):
+            return None
+        limit = d.get("character_limit")
+        count = d.get("character_count")
+        if isinstance(limit, (int, float)) and isinstance(count, (int, float)):
+            return int(limit - count)
+        return None
     except Exception as e:
         logger.warning(f"Could not read ElevenLabs quota: {e}")
         return None

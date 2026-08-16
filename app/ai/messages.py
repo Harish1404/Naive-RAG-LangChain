@@ -59,5 +59,5 @@ def as_text(
     lines = []
     for message in messages:
         role = "User" if isinstance(message, HumanMessage) else "Assistant"
-        lines.append(f"{role}: {message.content}")
+        lines.append(f"{role}: {content_to_text(message.content)}")
     return "\n".join(lines)

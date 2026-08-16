@@ -20,7 +20,7 @@ from app.core.tracing import drop_plumbing, join_tokens, set_run_inputs
 )
 async def stream(ctx: TurnContext, llms: LLMBundle) -> AsyncIterator[str]:
     """Answers from the model's own knowledge. No retrieval, no tools."""
-    set_run_inputs(user_prompt=ctx.user_prompt)
+    set_run_inputs(user_prompt=getattr(ctx, "user_prompt", ""))
 
     messages = [
         SystemMessage(content=DIRECT_SYSTEM_PROMPT),

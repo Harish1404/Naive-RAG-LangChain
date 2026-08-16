@@ -25,7 +25,10 @@ async def stream(ctx: TurnContext, llms: LLMBundle) -> AsyncIterator[str]:
     Retrieves resume context first (so the model can read a city out of it),
     then runs the same tool loop.
     """
-    set_run_inputs(user_prompt=ctx.user_prompt, search_query=ctx.search_query)
+    set_run_inputs(
+        user_prompt=getattr(ctx, "user_prompt", ""),
+        search_query=getattr(ctx, "search_query", ""),
+    )
 
     retrieved_chunks = await rag_pipeline.retrieve(ctx.search_query)
     context_text = build_context_text(retrieved_chunks)
