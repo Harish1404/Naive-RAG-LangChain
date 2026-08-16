@@ -16,17 +16,17 @@ from app.core.tracing import (
     set_run_metadata,
 )
 from app.memory.store import conversation_store
-from app.prompts.rag_prompt import RAG_SYSTEM_PROMPT, build_context_text
-from app.prompts.router_prompt import (
+from app.ai.prompts.rag import RAG_SYSTEM_PROMPT, build_context_text
+from app.ai.prompts.router import (
     TOOL_SYSTEM_PROMPT,
     BOTH_SYSTEM_PROMPT,
     DIRECT_SYSTEM_PROMPT,
 )
-from app.prompts.voice_prompt import VOICE_SYSTEM_PROMPT
+from app.ai.prompts.voice import VOICE_SYSTEM_PROMPT
 from app.core.config import settings
-from app.rag.rag_pipeline import rag_pipeline
-from app.ai.router import query_router
-from app.tools.weather import get_weather
+from app.ai.rag.pipeline import rag_pipeline
+from app.ai.router.query_router import query_router
+from app.ai.tools.weather import get_weather
 
 # logger lets us print debug/error messages to the console with proper labels
 logger = logging.getLogger(__name__)

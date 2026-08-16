@@ -3,9 +3,9 @@ import logging
 from langsmith import traceable
 
 from app.core.tracing import drop_self, as_documents
-from app.rag.data_processor import process_folder
-from app.rag.embeddings import EmbeddingModel
-from app.rag.vector_store import VectorStore
+from app.ai.rag.data_processor import process_folder
+from app.ai.rag.embeddings import EmbeddingModel
+from app.ai.rag.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
 

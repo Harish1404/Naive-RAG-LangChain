@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from app.core.config import settings
 from app.core.tracing import drop_self
 from app.memory.window import as_text
-from app.prompts.router_prompt import ROUTER_PROMPT
+from app.ai.prompts.router import ROUTER_PROMPT
 
 logger = logging.getLogger(__name__)
 
