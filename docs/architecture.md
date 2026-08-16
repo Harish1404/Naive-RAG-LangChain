@@ -89,9 +89,11 @@ calling. A route never queries a user collection directly.
 
 `app/ai/` holds the same line from the other direction: **the answering path does not
 touch the database.** A caller loads history and passes it in; tokens come back out. No
-node, prompt, router or tool reads or writes Mongo. Two modules break that deliberately —
-`ai/chat/persistence.py`, which writes the finished answer back, and `ai/rag/vector_store.py`,
-where the Atlas collection *is* the vector store — and a grep should never find a third:
+node, prompt, router or tool reads or writes Mongo. Three modules break that deliberately —
+`ai/chat/persistence.py`, which writes the finished answer back; `ai/rag/vector_store.py`,
+where the Atlas collection *is* the vector store; and `ai/mcp/client.py`, which cannot
+build a user's tools without reading that user's stored credential — and a grep should
+never find a fourth:
 
 ```bash
 grep -rn "app\.db\|app\.memory\|app\.repositories" app/ai/
