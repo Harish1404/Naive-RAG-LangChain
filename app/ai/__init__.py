@@ -11,8 +11,15 @@ The layout is by concern, one folder each:
     prompts/      the text handed to the models, kept out of the logic that sends it
     experimental/ written, not wired to any route
 
-One rule holds this together: **nothing under app/ai/ imports the database.** The
-caller loads history and hands it in; the answer comes back as a stream of tokens.
-The single deliberate exception is chat/persistence.py, which exists to write a
-finished answer back and is imported by chat/service.py alone.
+One rule holds this together: **the answering path does not touch the database.**
+The caller loads history and hands it in; the answer comes back as a stream of
+tokens. No node, no prompt, no router and no tool reads or writes Mongo.
+
+Exactly two modules break that, both on purpose, and a grep should never find a
+third:
+
+    chat/persistence.py    writes the finished answer back. Imported by
+                           chat/service.py and by nothing else.
+    rag/vector_store.py    the Atlas collection *is* the vector store, so the
+                           storage is the feature rather than a dependency.
 """
