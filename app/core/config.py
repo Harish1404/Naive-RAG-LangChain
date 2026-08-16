@@ -112,24 +112,37 @@ class Settings:
     GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID")
     GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET")
     # Space-separated, the format GitHub's authorize endpoint expects.
-    # `repo` grants read AND WRITE to private repositories — narrow this to
-    # `public_repo` if the tool allowlist stays read-only. Changing it later
-    # forces every already-connected user to re-consent.
-    GITHUB_OAUTH_SCOPES = os.getenv("GITHUB_OAUTH_SCOPES", "repo read:org read:user")
-    # GitHub's hosted remote MCP server, /readonly variant.
     #
-    # The suffix is not decoration. Verified against the live server: the plain
+    # `repo` is required and there is no narrower option: GitHub has no
+    # read-only private-repo scope, and the write workflow (create repository,
+    # branch, push, open PR) needs write on private repos. `public_repo` would
+    # cover public repos only, at the cost of reaching no private ones at all.
+    #
+    # Changing this later forces every already-connected user to re-consent.
+    GITHUB_OAUTH_SCOPES = os.getenv("GITHUB_OAUTH_SCOPES", "repo read:org read:user")
+    # GitHub's hosted remote MCP server, in two faces.
+    #
+    # READ is the /readonly variant and is what ordinary questions use. The
+    # suffix is not decoration: measured against the live server, the plain
     # endpoint offers 44 tools of which 13 write (create_branch,
-    # create_or_update_file, create_pull_request, ...); /readonly offers 27 and
-    # none of them write. That is a server-side guarantee, independent of the
-    # OAuth scope and of our own allowlist - three layers, and this is the one
-    # an attacker cannot talk their way past by getting the model to ask for a
-    # tool we did not intend to bind.
+    # create_or_update_file, create_pull_request, delete_file,
+    # merge_pull_request, ...), while /readonly offers 27 and none of them
+    # write. That is enforced server-side, so it holds regardless of what the
+    # OAuth scope permits and regardless of what our allowlist asks for.
+    #
+    # WRITE is the plain endpoint, reached only by the MCP_WRITE route, which
+    # the router picks only when the user explicitly asks to create something.
+    # A turn that merely reads a repository never has a write tool bound - see
+    # the module docstring in app/ai/mcp/config.py for why that separation is
+    # the point rather than an implementation detail.
     #
     # Other useful forms: /x/{toolset} narrows by area, and the X-MCP-Toolsets
     # header does the same. See docs/remote-server.md in github/github-mcp-server.
-    GITHUB_MCP_URL = os.getenv(
-        "GITHUB_MCP_URL", "https://api.githubcopilot.com/mcp/readonly"
+    GITHUB_MCP_READ_URL = os.getenv(
+        "GITHUB_MCP_READ_URL", "https://api.githubcopilot.com/mcp/readonly"
+    )
+    GITHUB_MCP_WRITE_URL = os.getenv(
+        "GITHUB_MCP_WRITE_URL", "https://api.githubcopilot.com/mcp/"
     )
 
     # base64 of 32 random bytes. Encrypts the stored OAuth token — see
@@ -189,7 +202,8 @@ class Settings:
     github_client_id = GITHUB_CLIENT_ID
     github_client_secret = GITHUB_CLIENT_SECRET
     github_oauth_scopes = GITHUB_OAUTH_SCOPES
-    github_mcp_url = GITHUB_MCP_URL
+    github_mcp_read_url = GITHUB_MCP_READ_URL
+    github_mcp_write_url = GITHUB_MCP_WRITE_URL
     connector_enc_key = CONNECTOR_ENC_KEY
     mcp_tool_cache_ttl = MCP_TOOL_CACHE_TTL
     oauth_state_ttl_min = OAUTH_STATE_TTL_MIN

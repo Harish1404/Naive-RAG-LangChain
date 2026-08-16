@@ -17,9 +17,13 @@ from app.ai.tools.weather import get_weather
 TOOLS: list[BaseTool] = [get_weather]
 
 
-async def tools_for_user(user_id: str) -> list[BaseTool]:
+async def tools_for_user(user_id: str, mode: str = "read") -> list[BaseTool]:
     """
     Everything this user may call this turn: the shared tools plus their own.
+
+    `mode` is "read" or "write" and selects which face of the MCP servers is
+    used — see app/ai/mcp/config.py. It defaults to "read" so that a caller who
+    forgets to pass it gets the safe half rather than push access.
 
     Falls back to the shared tools alone if MCP resolution fails. A GitHub
     outage should cost the user their GitHub tools, not their whole turn.
@@ -31,4 +35,4 @@ async def tools_for_user(user_id: str) -> list[BaseTool]:
     if not user_id:
         return list(TOOLS)
 
-    return [*TOOLS, *await tools_for(user_id)]
+    return [*TOOLS, *await tools_for(user_id, mode)]

@@ -13,7 +13,7 @@ from typing import Any
 from langchain_core.tools import BaseTool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
-from app.ai.mcp.config import SERVERS, MCPServer
+from app.ai.mcp.config import READ, SERVERS, MCPServer
 from app.core import crypto
 from app.core.config import settings
 from app.repositories.connector_repo import STATUS_CONNECTED, connector_repo
@@ -23,24 +23,40 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 # The cache.
 #
-# Keyed on user_id and NOTHING ELSE, and that is a security property rather
-# than a design preference. A cached BaseTool closes over the connection it was
-# built from, and that connection carries the user's bearer token in its
-# headers. Widening the key to something shared — a provider name, a model, a
-# "default" bucket — hands one user another user's GitHub account.
+# Keyed on (user_id, mode), and both halves of that key are load-bearing.
 #
-# Two rules follow, and both are load-bearing:
+# user_id, because a cached BaseTool closes over the connection it was built
+# from and that connection carries the user's bearer token in its headers.
+# Widening to something shared — a provider name, a "default" bucket — hands one
+# user another user's GitHub account.
+#
+# mode, because the read face and the write face are different tool sets from
+# different endpoints. Sharing one entry between them would let a turn that only
+# meant to read a repository be handed push_files and create_pull_request, which
+# is exactly the pairing the read/write split exists to prevent.
+#
+# Three rules follow:
 #   * never read an entry for a user other than the one asking
+#   * never read an entry for a mode other than the one asked for
 #   * always invalidate on connect and disconnect, or a disconnected user keeps
 #     working from tools built with the token we just revoked
 # ─────────────────────────────────────────────────────────────────────────────
-_cache: dict[str, tuple[float, list[BaseTool]]] = {}
+_cache: dict[tuple[str, str], tuple[float, list[BaseTool]]] = {}
 
 
 def invalidate(user_id: str) -> None:
-    """Drop this user's cached tools. Called on connect and on disconnect."""
-    if _cache.pop(user_id, None) is not None:
-        logger.info(f"MCP tool cache invalidated for {user_id}")
+    """
+    Drop this user's cached tools, in every mode.
+
+    Both faces are built from the same credential, so revoking it has to clear
+    both. Dropping only the read entry would leave a live write tool set built
+    with a token the user just disconnected.
+    """
+    dropped = [key for key in _cache if key[0] == user_id]
+    for key in dropped:
+        _cache.pop(key, None)
+    if dropped:
+        logger.info(f"MCP tool cache invalidated for {user_id} ({len(dropped)} entries)")
 
 
 def invalidate_all() -> None:
@@ -48,25 +64,29 @@ def invalidate_all() -> None:
     _cache.clear()
 
 
-def _cached(user_id: str) -> list[BaseTool] | None:
-    entry = _cache.get(user_id)
+def _cached(user_id: str, mode: str) -> list[BaseTool] | None:
+    entry = _cache.get((user_id, mode))
     if entry is None:
         return None
 
     expires_at, tools = entry
     if time.monotonic() >= expires_at:
-        _cache.pop(user_id, None)
+        _cache.pop((user_id, mode), None)
         return None
 
     return tools
 
 
-def _select(tools: list[BaseTool], server: MCPServer) -> list[BaseTool]:
-    """Narrow a server's tools to its allowlist. Empty allowlist means all."""
-    if not server.allowlist:
-        return tools
+def _select(tools: list[BaseTool], server: MCPServer, mode: str) -> list[BaseTool]:
+    """Narrow a server's tools to this mode's allowlist."""
+    allowlist = server.allowlist_for(mode)
+    if not allowlist:
+        # Never reached with the current config, and deliberately fails closed
+        # rather than binding all 44 tools if someone empties an allowlist.
+        logger.error(f"{server.provider}: empty {mode} allowlist; binding nothing")
+        return []
 
-    allowed = set(server.allowlist)
+    allowed = set(allowlist)
     kept = [tool for tool in tools if tool.name in allowed]
 
     missing = allowed - {tool.name for tool in kept}
@@ -81,12 +101,13 @@ def _select(tools: list[BaseTool], server: MCPServer) -> list[BaseTool]:
     return kept
 
 
-async def _connections_for(user_id: str) -> dict[str, dict[str, Any]]:
+async def _connections_for(user_id: str, mode: str) -> dict[str, dict[str, Any]]:
     """
     Build the per-server connection config for everything this user connected.
 
     This is where the user's token is decrypted, and the resulting dict is the
-    thing that must never be shared between users.
+    thing that must never be shared between users. `mode` picks which endpoint
+    to point at — /readonly for reads, the full one for writes.
     """
     connections: dict[str, dict[str, Any]] = {}
 
@@ -118,30 +139,35 @@ async def _connections_for(user_id: str) -> dict[str, dict[str, Any]]:
 
         connections[provider] = {
             "transport": server.transport,
-            "url": server.url,
+            "url": server.url_for(mode),
             "headers": server.headers(token),
         }
 
     return connections
 
 
-async def tools_for(user_id: str) -> list[BaseTool]:
+async def tools_for(user_id: str, mode: str = READ) -> list[BaseTool]:
     """
-    This user's MCP tools. `[]` when nothing is connected.
+    This user's MCP tools for `mode`. `[]` when nothing is connected.
+
+    `mode` is READ or WRITE. READ hits GitHub's /readonly endpoint, where no
+    write tool is offered at all; WRITE hits the full endpoint and is reached
+    only from the MCP_WRITE node, which the router picks only when the user
+    explicitly asked to create something.
 
     Returning an empty list rather than raising is deliberate: "you have not
     connected anything" is a normal state that the calling node turns into a
     sentence, not an error.
     """
-    cached = _cached(user_id)
+    cached = _cached(user_id, mode)
     if cached is not None:
         return cached
 
-    connections = await _connections_for(user_id)
+    connections = await _connections_for(user_id, mode)
     if not connections:
         # Cached too, so a user with nothing connected does not hit Mongo on
         # every turn just to be told the same thing.
-        _cache[user_id] = (time.monotonic() + settings.mcp_tool_cache_ttl, [])
+        _cache[(user_id, mode)] = (time.monotonic() + settings.mcp_tool_cache_ttl, [])
         return []
 
     client = MultiServerMCPClient(connections)
@@ -158,13 +184,14 @@ async def tools_for(user_id: str) -> list[BaseTool]:
             await connector_repo.mark_error(user_id, provider, str(e))
             continue
 
-        selected = _select(fetched, server)
+        selected = _select(fetched, server, mode)
         logger.info(
-            f"{provider}: {len(selected)} of {len(fetched)} tools bound for {user_id}"
+            f"{provider} [{mode}]: {len(selected)} of {len(fetched)} tools bound "
+            f"for {user_id}"
         )
         tools.extend(selected)
 
         await connector_repo.mark_used(user_id, provider)
 
-    _cache[user_id] = (time.monotonic() + settings.mcp_tool_cache_ttl, tools)
+    _cache[(user_id, mode)] = (time.monotonic() + settings.mcp_tool_cache_ttl, tools)
     return tools

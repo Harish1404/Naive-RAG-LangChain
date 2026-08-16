@@ -1,4 +1,4 @@
-"""Route MCP: answer from the user's own connected accounts. No retrieval."""
+"""Route MCP: read from the user's own connected accounts. No retrieval, no writes."""
 
 import logging
 from typing import AsyncIterator
@@ -10,6 +10,7 @@ from app.ai.chat.context import TurnContext
 from app.ai.chat.models import LLMBundle, with_tools_for
 from app.ai.chat.tool_loop import run_tool_loop
 from app.ai.prompts.router import MCP_NOT_CONNECTED, MCP_SYSTEM_PROMPT
+from app.ai.mcp.config import READ
 from app.ai.tools.registry import TOOLS, tools_for_user
 from app.core.tracing import drop_plumbing, join_tokens, set_run_inputs
 
@@ -32,7 +33,10 @@ async def stream(ctx: TurnContext, llms: LLMBundle) -> AsyncIterator[str]:
     """
     set_run_inputs(user_prompt=getattr(ctx, "user_prompt", ""))
 
-    tools = await tools_for_user(ctx.user_id)
+    # READ explicitly: these tools come from GitHub's /readonly endpoint, so
+    # the server itself will not hand back anything that writes. A question
+    # that reads a poisoned issue body has nothing to be injected *into*.
+    tools = await tools_for_user(ctx.user_id, READ)
 
     # tools_for_user always returns the shared tools, so "nothing connected"
     # means nothing came back beyond those.
