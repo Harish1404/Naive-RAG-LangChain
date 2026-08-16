@@ -6,19 +6,21 @@ Exactly one node runs per turn:
     RAG    -> retrieve resume chunks, answer from them (no tools)
     TOOL   -> call the weather tool, answer from its result (no retrieval)
     BOTH   -> retrieve resume chunks AND call the weather tool
-    DIRECT -> answer from the model's own knowledge (neither)
+    MCP    -> call the user's own connected accounts (GitHub today)
+    DIRECT -> answer from the model's own knowledge (none of the above)
 
 This is the fix for the old behaviour, where retrieval always ran and the
 weather tool was always available, so both fired for every single question.
 """
 
-from app.ai.chat.nodes import both, direct, rag, tool
+from app.ai.chat.nodes import both, direct, mcp, rag, tool
 from app.ai.chat.nodes.base import Node
 
 NODES: dict[str, Node] = {
     "RAG": rag.stream,
     "TOOL": tool.stream,
     "BOTH": both.stream,
+    "MCP": mcp.stream,
     "DIRECT": direct.stream,
 }
 

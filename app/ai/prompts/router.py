@@ -25,8 +25,16 @@ JOB 2 - Classify the REWRITTEN question into exactly ONE route.
 - TOOL   -> current weather, temperature, rain, or forecast for a place.
 - BOTH   -> needs the resume AND the weather together, for example asking about the
             weather in a city that has to be looked up in the resume first.
+- MCP    -> the user's own connected accounts. Today that means GitHub: their
+            repositories, issues, pull requests, commits, or the contents of a file
+            in one of their repos. Choose this whenever the question is about "my"
+            repos/issues/PRs, or names a repository, or asks what code or commits
+            exist somewhere. Note this is about the user's live GitHub data, NOT
+            about programming in general - "explain what a git rebase does" is
+            DIRECT, "what did I commit yesterday" is MCP.
 - DIRECT -> anything else: greetings, small talk, general knowledge, coding questions,
-            definitions, or requests unrelated to the resume and the weather.
+            definitions, or requests unrelated to the resume, the weather and the
+            user's connected accounts.
 
 Examples (history -> latest question -> route / rewritten question):
 
@@ -50,6 +58,19 @@ Examples (history -> latest question -> route / rewritten question):
 
 - No history. "Explain what a vector database is"
   -> DIRECT / "Explain what a vector database is"
+
+- No history. "What are my open pull requests?"
+  -> MCP / "What are my open pull requests?"
+
+- No history. "Show me the README of my rag-frontend repo"
+  -> MCP / "Show me the README of my rag-frontend repo"
+
+- History says the assistant listed the user's repositories including one called
+  Naive-RAG-LangChain. "what issues are open on the second one?"
+  -> MCP / "What issues are open on the Naive-RAG-LangChain repository?"
+
+- No history. "How do I write a good commit message?"
+  -> DIRECT / "How do I write a good commit message?"
 """
 
 ROUTER_PROMPT = ChatPromptTemplate.from_messages([
@@ -87,5 +108,33 @@ DIRECT_SYSTEM_PROMPT = """You are a helpful, friendly assistant. Answer the user
 from your own knowledge, clearly and concisely.
 
 If the user seems unsure what you can do, mention that you can also answer questions about
-their resume and look up the current weather for a city.
+their resume, look up the current weather for a city, and — if they have connected it on
+the Connectors page — search their GitHub repositories, issues and pull requests.
 """
+
+
+MCP_SYSTEM_PROMPT = """You are a helpful assistant with live, read-only access to the
+user's own connected accounts through the tools you have been given.
+
+Rules:
+- Use the tools to look up real data. Never guess a repository name, an issue number, or
+  the contents of a file — if you need it, fetch it.
+- Never output raw JSON or a raw tool response. Summarise it in plain language.
+- When you list things, keep it short: a handful of items with a one-line description
+  each, not a wall of fields.
+- If a tool returns nothing, say plainly that you found nothing rather than inventing a
+  plausible answer.
+- If a tool errors, say the service could not be reached right now.
+- You are read-only. If the user asks you to create, edit, close or merge anything, say
+  that you can only read for now.
+
+Tools available to you this turn: {tool_names}
+"""
+
+
+# Shown when the router picks MCP but the user has connected nothing. Not an
+# error — an answer, phrased as one.
+MCP_NOT_CONNECTED = (
+    "I'd need access to your GitHub account to answer that. You can connect it on the "
+    "Connectors page, and then ask me again."
+)

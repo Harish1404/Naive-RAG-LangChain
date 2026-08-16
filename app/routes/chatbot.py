@@ -57,6 +57,7 @@ async def chatbot(body: ChatRequest, user_id: str = Depends(get_current_user_id)
         user_prompt=body.user_prompt,
         conversation_id=conversation_id,
         history=history,
+        user_id=user_id,
     )
 
     # Wrap the generator in FastAPI's StreamingResponse

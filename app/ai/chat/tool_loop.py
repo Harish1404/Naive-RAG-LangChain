@@ -10,13 +10,13 @@ import logging
 from typing import AsyncIterator
 
 from langchain_core.messages import ToolMessage
+from langchain_core.tools import BaseTool
 from langsmith import traceable
 
 from app.ai.chat.context import TurnContext
 from app.ai.chat.models import LLMBundle
 from app.ai.chat.streaming import stream_text
 from app.ai.messages import content_to_text
-from app.ai.tools.registry import get_tool
 from app.core.tracing import join_tokens, summarize_messages
 
 logger = logging.getLogger(__name__)
@@ -32,6 +32,7 @@ async def run_tool_loop(
     messages: list,
     llms: LLMBundle,
     ctx: TurnContext,
+    tools: list[BaseTool],
 ) -> AsyncIterator[str]:
     """
     A single tool-call round-trip, using only langchain-core primitives:
@@ -46,7 +47,15 @@ async def run_tool_loop(
 
     `messages` is mutated: the caller passes a list built for this turn, never
     ctx.history itself, which must stay clean for the next turn.
+
+    `tools` is what may be called on THIS turn, resolved by name below. It is a
+    parameter rather than a module-level lookup because MCP tools belong to one
+    user: a global registry could only ever hold the shared tools, and reaching
+    for one here would either miss a user's GitHub tools or, worse, find
+    somebody else's.
     """
+    by_name = {tool.name: tool for tool in tools}
+
     ai_msg = await llms.with_tools.ainvoke(messages)
 
     # The model answered directly without reaching for a tool.
@@ -60,7 +69,7 @@ async def run_tool_loop(
 
     for tool_call in ai_msg.tool_calls:
         name = tool_call.get("name")
-        tool = get_tool(name)
+        tool = by_name.get(name)
         if tool is None:
             logger.warning(f"Model requested unknown tool {name!r}; skipping.")
             continue

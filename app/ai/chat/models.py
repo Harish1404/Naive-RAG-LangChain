@@ -77,6 +77,38 @@ def build_models(max_tokens: int) -> LLMBundle:
     return LLMBundle(plain=llm_with_fallbacks, with_tools=llm_with_tools)
 
 
+def with_tools_for(bundle: LLMBundle, tools: list) -> LLMBundle:
+    """
+    A copy of `bundle` whose tool-aware model also knows `tools`.
+
+    This exists because MCP tools are **per user** while build_models is cached
+    per token budget, and mixing those two is a cross-user credential leak:
+    binding a user's GitHub tools inside build_models would store them in the
+    lru_cache entry for `max_tokens`, and the next user with the same budget
+    would be handed them. Two users, one cache entry, one GitHub account.
+
+    So the expensive half stays cached and the per-user half happens here.
+    Binding only attaches JSON schemas to an already-built client — no network
+    call, no client construction — which is what makes it cheap enough to do on
+    every request that needs it.
+
+    Returns `bundle` unchanged when there is nothing to add, so the common case
+    allocates nothing.
+    """
+    if not tools:
+        return bundle
+
+    combined = [*TOOLS, *tools]
+
+    # bind_tools() on a RunnableWithFallbacks preserves the fallback chain on
+    # langchain-core 1.5.3, so the Groq -> Gemini failover still applies to the
+    # rebound model. Note this is the opposite of the constraint documented in
+    # build_models above, which held for an older version and is why that
+    # function still binds each model separately; do not "simplify" the two to
+    # match without re-checking against the installed version.
+    return LLMBundle(plain=bundle.plain, with_tools=bundle.plain.bind_tools(combined))
+
+
 def warm_up_models() -> None:
     """Build both token-budget variants at startup rather than mid-request."""
     for budget in (DEFAULT_MAX_TOKENS, settings.voice_max_tokens):

@@ -8,6 +8,7 @@ from langsmith import traceable
 from app.ai.chat.context import TurnContext
 from app.ai.chat.models import LLMBundle
 from app.ai.chat.tool_loop import run_tool_loop
+from app.ai.tools.registry import TOOLS
 from app.ai.prompts.rag import build_context_text
 from app.ai.prompts.router import BOTH_SYSTEM_PROMPT
 from app.ai.rag.pipeline import rag_pipeline
@@ -41,5 +42,5 @@ async def stream(ctx: TurnContext, llms: LLMBundle) -> AsyncIterator[str]:
         ),
     ]
 
-    async for token in run_tool_loop(messages, llms, ctx):
+    async for token in run_tool_loop(messages, llms, ctx, TOOLS):
         yield token

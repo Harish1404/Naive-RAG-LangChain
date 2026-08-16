@@ -27,6 +27,11 @@ class TurnContext:
 
     user_prompt: str
     conversation_id: str
+    # Who is asking. Needed because some tools belong to a person rather than
+    # to the app — the MCP node resolves this user's connected GitHub tools.
+    # Defaulted so the many places that construct a context in tests and
+    # scripts do not all have to care.
+    user_id: str = ""
     history: list[BaseMessage] = field(default_factory=list)
     voice_mode: bool = False
 

@@ -24,7 +24,7 @@ class RouteDecision(BaseModel):
     no accuracy gain — the model needs the same history to do either job.
     """
 
-    route: Literal["RAG", "TOOL", "BOTH", "DIRECT"] = Field(
+    route: Literal["RAG", "TOOL", "BOTH", "MCP", "DIRECT"] = Field(
         description="Which path should answer this question."
     )
     standalone_question: str = Field(
@@ -46,7 +46,7 @@ class QueryRouter:
     The rewritten question is what gets searched.
     """
 
-    VALID_ROUTES = {"RAG", "TOOL", "BOTH", "DIRECT"}
+    VALID_ROUTES = {"RAG", "TOOL", "BOTH", "MCP", "DIRECT"}
 
     # If the model returns something unusable, fall back to the app's main purpose.
     DEFAULT_ROUTE = "RAG"
