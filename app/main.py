@@ -25,6 +25,7 @@ from app.ai.tools.weather import close_client as close_weather_client
 from app.ai.voice.stt import warm_up as warm_up_stt
 from app.ai.voice.tts import remaining_credits
 from app.ai.chat.models import warm_up_models, warm_up_llm
+from app.ai.router.query_router import query_router
 
 
 # Configure logging to output INFO level logs to terminal
@@ -65,7 +66,7 @@ async def lifespan(app: FastAPI):
     # that every later one does not. Spending it here means the first person to
     # press the mic button gets the same latency as everyone after them.
     warm_up_models()
-    await asyncio.gather(warm_up_stt(), warm_up_llm())
+    await asyncio.gather(warm_up_stt(), warm_up_llm(), query_router.warm_up())
 
     credits = await remaining_credits()
     if credits is not None:

@@ -121,6 +121,25 @@ class QueryRouter:
 
         return self._fallback(query)
 
+    async def warm_up(self) -> None:
+        """Open the TLS connection to Mistral before the first real route.
+
+        The router has its own ChatMistralAI instance, separate from the
+        answering models in models.py, so it needs its own warm-up.
+        Uses a lightweight /v1/models GET — zero tokens, zero latency tax.
+        """
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                await client.get(
+                    "https://api.mistral.ai/v1/models",
+                    headers={"Authorization": f"Bearer {settings.mistral_api_key}"},
+                    timeout=5.0,
+                )
+            logger.info("Router connection warmed up (Mistral /models ping)")
+        except Exception as e:
+            logger.warning(f"Router warm-up skipped: {e}")
+
 
 # Module-level singleton, same pattern as app/rag/rag_pipeline.py
 query_router = QueryRouter()

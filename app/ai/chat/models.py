@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
 
-from langchain_core.messages import HumanMessage
+
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_mistralai import ChatMistralAI
 
@@ -108,17 +108,23 @@ def warm_up_models() -> None:
 
 
 async def warm_up_llm() -> None:
-    """Open the connection to Groq's chat endpoint before the first real turn.
+    """Open the TLS connection to Mistral before the first real turn.
 
-    Same reasoning as the STT warm-up in app/ai/voice/stt.py, and measurably
-    worth it: the first turn of a fresh process saw first-audio at ~2.4s against
-    ~1.3s for every turn after, and the difference was almost entirely the
-    first chat/completions call paying for TLS setup.
+    Same reasoning as the STT warm-up in app/ai/voice/stt.py: the first
+    request of a fresh process pays ~1-2s of TLS setup. Spending it here
+    means the first user gets the same latency as everyone after them.
+
+    Uses a lightweight /v1/models GET instead of a chat completion so it
+    costs zero tokens and adds nothing to rate-limit counters.
     """
     try:
-        llms = build_models(settings.voice_max_tokens)
-        async for _ in llms.plain.astream([HumanMessage(content="hi")]):
-            break  # one token is enough to establish the connection
-        logger.info("LLM connection warmed up")
+        import httpx
+        async with httpx.AsyncClient() as client:
+            await client.get(
+                "https://api.mistral.ai/v1/models",
+                headers={"Authorization": f"Bearer {settings.mistral_api_key}"},
+                timeout=5.0,
+            )
+        logger.info("LLM connection warmed up (Mistral /models ping)")
     except Exception as e:
         logger.warning(f"LLM warm-up skipped: {e}")

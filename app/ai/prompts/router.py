@@ -46,15 +46,6 @@ JOB 2 - Classify the REWRITTEN question into exactly ONE route.
 
 Examples (history -> latest question -> route / rewritten question):
 
-- No history. "What are my technical skills?"
-  -> RAG / "What are my technical skills?"
-
-- No history. "How hot is it in Chennai right now?"
-  -> TOOL / "How hot is it in Chennai right now?"
-
-- No history. "Who is Harish?"
-  -> RAG / "Who is Harish?"
-
 - History says the user worked at Acme in Bangalore. "What was his title there?"
   -> RAG / "What was the user's job title at Acme in Bangalore?"
 
@@ -67,24 +58,12 @@ Examples (history -> latest question -> route / rewritten question):
 - No history. "Explain what a vector database is"
   -> DIRECT / "Explain what a vector database is"
 
-- No history. "What are my open pull requests?"
-  -> MCP / "What are my open pull requests?"
-
-- No history. "Show me the README of my rag-frontend repo"
-  -> MCP / "Show me the README of my rag-frontend repo"
-
 - History says the assistant listed the user's repositories including one called
   Naive-RAG-LangChain. "what issues are open on the second one?"
   -> MCP / "What issues are open on the Naive-RAG-LangChain repository?"
 
-- No history. "How do I write a good commit message?"
-  -> DIRECT / "How do I write a good commit message?"
-
 - No history. "Create a repo called weather-cli and push a README to it"
   -> MCP_WRITE / "Create a repo called weather-cli and push a README to it"
-
-- No history. "Make a branch called feature/login on my rag-frontend repo and open a PR"
-  -> MCP_WRITE / "Make a branch called feature/login on my rag-frontend repo and open a PR"
 
 - No history. "Can you create pull requests for me?"
   -> DIRECT / "Can you create pull requests for me?"
