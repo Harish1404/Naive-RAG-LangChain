@@ -12,7 +12,7 @@ from typing import Any
 
 from langchain_core.messages import HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_groq import ChatGroq
+from langchain_mistralai import ChatMistralAI
 
 from app.ai.tools.registry import TOOLS
 from app.core.config import settings
@@ -40,20 +40,12 @@ class LLMBundle:
 def build_models(max_tokens: int) -> LLMBundle:
     """The model pair for a given token budget, built once per process.
 
-    Constructing these is expensive and, crucially, *not* a one-off cold start:
-    measured here, ChatGoogleGenerativeAI takes ~740ms and ChatGroq ~490ms
-    EVERY time, so building them per request put a flat ~1.2s in front of every
-    answer — voice and text alike — before a single byte was sent to any API.
-
-    They are stateless HTTP clients, so one set per token budget is safe to
-    share across requests, the same way app/ai/router/query_router.py already
-    keeps a module-level singleton. Cached on max_tokens because that is the
-    only thing that varies (500 for text, ~120 for voice), which means two
-    entries.
+    Constructing these is expensive and, crucially, *not* a one-off cold start.
+    Stateless HTTP clients are built per token budget and shared across requests.
     """
-    primary_llm = ChatGroq(
-        model="llama-3.1-8b-instant",
-        groq_api_key=settings.groq_api_key,
+    primary_llm = ChatMistralAI(
+        model="mistral-small-latest",
+        api_key=settings.mistral_api_key,
         temperature=0.7,
         max_tokens=max_tokens,
     )

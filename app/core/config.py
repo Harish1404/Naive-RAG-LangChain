@@ -11,6 +11,8 @@ class Settings:
     BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
     GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+    CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY") or os.getenv("CEREBRES_API_KEY")
+    MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
     FLUX_AI = os.getenv("FLUX_AI")
     WEATHER_WEBHOOK_URL = os.getenv("WEATHER_WEBHOOK_URL")
     # LangSmith. Listed here for visibility only — the SDK reads these straight
@@ -182,6 +184,8 @@ class Settings:
     # lowercase aliases — this is what ChatService / ChainService actually read
     gemini_api_key = GEMINI_API_KEY
     groq_api_key = GROQ_API_KEY
+    cerebras_api_key = CEREBRAS_API_KEY
+    mistral_api_key = MISTRAL_API_KEY
     flux_ai = FLUX_AI
     weather_webhook_url = WEATHER_WEBHOOK_URL
     langsmith_api_key = LANGSMITH_API_KEY
